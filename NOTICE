@@ -1,0 +1,68 @@
+herdr-orchestrators
+Copyright (c) 2026 Tomas Benjamin Lillo Sanhueza. MIT License (see LICENSE).
+
+This repository includes third-party material. Each part keeps its own
+license, listed below. Every adaptation is recorded in the PROVENANCE files
+under shared/.
+
+
+1. tomidev-shell, commit 6ae777532 (MIT License)
+   Copyright (c) 2025 Mario Zechner
+
+   Ported and adapted from it:
+     shared/core/odd-core.md   changes: shared/PROVENANCE-core.md
+     shared/docs/*.md          changes: shared/PROVENANCE-docs.md
+     shared/roles/*.md         changes: shared/PROVENANCE-roles.md
+
+   Permission is hereby granted, free of charge, to any person obtaining a
+   copy of this software and associated documentation files (the
+   "Software"), to deal in the Software without restriction, including
+   without limitation the rights to use, copy, modify, merge, publish,
+   distribute, sublicense, and/or sell copies of the Software, and to permit
+   persons to whom the Software is furnished to do so, subject to the
+   following conditions:
+
+   The above copyright notice and this permission notice shall be included
+   in all copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+   NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+   USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+2. Skills from tomidev-shell, commit 6ae777532 (Apache License 2.0)
+   Authors as declared in each SKILL.md (tomidev; gentleman-programming).
+
+     shared/skills/clean-code
+     shared/skills/comment-writer
+     shared/skills/consensus
+     shared/skills/delivery
+     shared/skills/gentle-ui-design
+     shared/skills/requesting-code-review
+     shared/skills/testing
+
+   Modified: the changes are listed in shared/PROVENANCE-skills.md, and each
+   modified SKILL.md says so in a header comment. Full license text:
+   LICENSES/Apache-2.0.txt.
+
+
+3. tlc-spec-lean (Creative Commons Attribution 4.0, CC-BY-4.0)
+   Tech Leads Club, https://github.com/tech-leads-club/agent-skills,
+   with the tomidev adaptation.
+
+   shared/skills/tlc-spec-lean. Upstream source and pinned commit:
+   shared/skills/tlc-spec-lean/UPSTREAM.md. License text:
+   shared/skills/tlc-spec-lean/LICENSE.upstream. Adaptations:
+   UPSTREAM.md and shared/PROVENANCE-skills.md.
+
+
+4. herdr skill, herdr v0.9.5 (Apache License 2.0)
+   The herdr project, https://github.com/herdrdev/herdr
+
+   shared/vendor/herdr/SKILL.md, copied verbatim. Its source and checksum
+   are in shared/vendor/herdr/UPSTREAM.json. Full license text:
+   LICENSES/Apache-2.0.txt.

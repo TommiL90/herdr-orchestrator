@@ -1,0 +1,197 @@
+[
+  {
+    "name": "gentle-ai-explore",
+    "description": "Read-only local and web exploration on its configured economical model.",
+    "tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "mcp__codegraph__codegraph_explore",
+      "WebSearch",
+      "WebFetch"
+    ],
+    "readonly": true,
+    "source_tools": [
+      "read",
+      "grep",
+      "find",
+      "codegraph",
+      "web_enable",
+      "web_search",
+      "source_check",
+      "fetch_content",
+      "get_search_content",
+      "mcp__codegraph__codegraph_explore"
+    ],
+    "model": "haiku"
+  },
+  {
+    "name": "gentle-ai-worker",
+    "description": "Scoped implementation writer for the orchestrator. Edits code, runs focused tests, and returns review-ready evidence without committing.",
+    "tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Edit",
+      "Write",
+      "Bash",
+      "mcp__engram__mem_save",
+      "mcp__codegraph__codegraph_explore"
+    ],
+    "readonly": false,
+    "source_tools": [
+      "read",
+      "grep",
+      "find",
+      "edit",
+      "write",
+      "bash",
+      "mem_save",
+      "mcp__codegraph__codegraph_explore"
+    ]
+  },
+  {
+    "name": "gentle-ai-verify",
+    "description": "Read-only technical verification for generic ODD work.",
+    "tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash",
+      "mcp__codegraph__codegraph_explore"
+    ],
+    "readonly": true,
+    "source_tools": [
+      "read",
+      "grep",
+      "find",
+      "bash",
+      "mcp__codegraph__codegraph_explore"
+    ]
+  },
+  {
+    "name": "jd-judge-a",
+    "description": "Blind adversarial judge A. Read-only; evaluates project-owned plans, acceptance criteria and sensitive diffs before execution. Reports findings without editing code.",
+    "tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash",
+      "mcp__codegraph__codegraph_explore"
+    ],
+    "readonly": true,
+    "source_tools": [
+      "read",
+      "grep",
+      "find",
+      "bash",
+      "mcp__codegraph__codegraph_explore"
+    ]
+  },
+  {
+    "name": "jd-judge-b",
+    "description": "Blind adversarial judge B. Read-only; evaluates project-owned plans, acceptance criteria and sensitive diffs before execution. Reports findings without editing code.",
+    "tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash",
+      "mcp__codegraph__codegraph_explore"
+    ],
+    "readonly": true,
+    "source_tools": [
+      "read",
+      "grep",
+      "find",
+      "bash",
+      "mcp__codegraph__codegraph_explore"
+    ]
+  },
+  {
+    "name": "review-risk",
+    "description": "R1 Risk reviewer \u2014 security, privilege boundaries, data exposure, dependency risks, and merge-blocking vulnerabilities.",
+    "tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash"
+    ],
+    "readonly": true,
+    "source_tools": [
+      "read",
+      "grep",
+      "find",
+      "bash"
+    ]
+  },
+  {
+    "name": "review-readability",
+    "description": "R2 Readability reviewer \u2014 naming, complexity, intention, maintainability, review size, and context clarity.",
+    "tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash"
+    ],
+    "readonly": true,
+    "source_tools": [
+      "read",
+      "grep",
+      "find",
+      "bash"
+    ]
+  },
+  {
+    "name": "review-reliability",
+    "description": "R3 Reliability reviewer \u2014 behavior-first tests, coverage value, edge cases, determinism, contracts, and regressions.",
+    "tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash"
+    ],
+    "readonly": true,
+    "source_tools": [
+      "read",
+      "grep",
+      "find",
+      "bash"
+    ]
+  },
+  {
+    "name": "review-resilience",
+    "description": "R4 Resilience reviewer \u2014 fallbacks, retry/backoff, graceful degradation, observability, load, rollback, and SLO risks.",
+    "tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash"
+    ],
+    "readonly": true,
+    "source_tools": [
+      "read",
+      "grep",
+      "find",
+      "bash"
+    ]
+  },
+  {
+    "name": "review-refuter",
+    "description": "Independent read-only refuter. Tries to disprove the Critical and Important findings of a code review before any correction; returns corroborated, refuted, or inconclusive per finding with proof.",
+    "tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash",
+      "mcp__codegraph__codegraph_explore"
+    ],
+    "readonly": true,
+    "source_tools": [
+      "read",
+      "grep",
+      "find",
+      "bash",
+      "mcp__codegraph__codegraph_explore"
+    ]
+  }
+]

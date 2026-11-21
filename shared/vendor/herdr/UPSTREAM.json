@@ -1,0 +1,7 @@
+{
+  "source": "https://raw.githubusercontent.com/herdrdev/herdr/v0.9.5/skills/herdr/SKILL.md",
+  "ref": "v0.9.5",
+  "sha256": "fbd9d502767f7dff29c211505a0bd9ba34e980ed4cc456247e2adc1642883984",
+  "fetched": "2026-11-21",
+  "note": "Verbatim copy. Do not edit; rerun scripts/sync-herdr-skill.py --update."
+}

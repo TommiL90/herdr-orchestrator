@@ -1,0 +1,11 @@
+{
+  "name": "orchestator",
+  "owner": { "name": "orchestator" },
+  "plugins": [
+    {
+      "name": "orc-cache",
+      "source": "./mods/orc-cache",
+      "description": "Claude Code only: prompt-cache meter and wait guard for hcorc/herdorc sessions."
+    }
+  ]
+}
