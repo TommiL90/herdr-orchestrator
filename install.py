@@ -9,9 +9,11 @@ changes: the links stay, their targets are regenerated. Moving the clone
 breaks the links; re-run it from the new place.
 
 Usage:
-  python3 install.py                       every supported CLI on PATH, global scope
+  python3 install.py                       every supported CLI on PATH, user (global) scope
   python3 install.py --cli claude,codex    only these CLIs: claude opencode agy codex cursor
   python3 install.py --scope project [--project DIR]   one project (default: current dir)
+                                           (--scope user and --scope global are the same:
+                                           your home folder; no CLI has a machine-wide place)
   python3 install.py --agents herdorc      one orchestrator only (roles always install)
   python3 install.py --dry-run             show what would change, write nothing
   python3 install.py --force               also overwrite files this script did not write
@@ -19,8 +21,11 @@ Usage:
   python3 install.py --uninstall [--cli ...] [--scope ...] [--project DIR]
   python3 install.py --status              installs recorded on this machine
   python3 install.py --herdr-app [--uninstall]   the Herdr desktop Skills panel (any CLI)
+  python3 install.py --herdr [--uninstall]       the orc-flow plugin in the herdr TUI (any CLI)
 
-Where each CLI gets what (global | project):
+installers/<target>.sh runs one of these per target, and ./install.sh all of them.
+
+Where each CLI gets what (user | project):
   claude    ~/.claude | .claude             agents, /<agent>-* commands, guard + phase hooks,
                                             and the mods in mods/ as Claude Code plugins
   opencode  ~/.config/opencode | .opencode  primary agents, subagents, /<agent>-* commands
@@ -861,6 +866,81 @@ def uninstall_herdr_app(dry, manifest):
     manifest.pop(key)
 
 
+# ------------------------------------------------------------------ herdr TUI
+# orc-flow, herdorc's graph: `herdr plugin link` points herdr at the plugin
+# folder in this clone (herdr's own link, like the symlinks above), and
+# bin/keys.mjs adds its keybinding block to herdr's config.toml.
+HERDR_PLUGIN = "orc-flow"
+
+
+def herdr_tui_config():
+    return Path(os.environ.get("XDG_CONFIG_HOME") or home() / ".config") / "herdr"
+
+
+def herdr_tui(*args):
+    try:
+        return subprocess.run(["herdr", *args], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(args, 1, "", str(e))
+
+
+def herdr_linked_path():
+    """Where herdr links orc-flow from, or None."""
+    m = re.search(rf"^- {HERDR_PLUGIN} \(.*\[local:(.+)\]\s*$", herdr_tui("plugin", "list").stdout, flags=re.M)
+    return m.group(1) if m else None
+
+
+def orc_flow_keys(mode):
+    r = subprocess.run(["node", str(ROOT / "herdr/plugins" / HERDR_PLUGIN / "bin/keys.mjs"), mode],
+                       capture_output=True, text=True)
+    return r.returncode == 0, (r.stdout + r.stderr).strip()
+
+
+def install_herdr(dry, manifest):
+    key = f"herdr|{herdr_tui_config()}"
+    src = ROOT / "herdr/plugins" / HERDR_PLUGIN
+    if not shutil.which("herdr"):
+        print("[herdr] skipped: herdr is not on PATH")
+        return True
+    node = subprocess.run(["sh", str(src / "bin/check-node.sh")], capture_output=True, text=True)
+    if node.returncode != 0:
+        print(f"[herdr] not installed: {(node.stdout + node.stderr).strip()}")
+        return False
+    linked_from = herdr_linked_path()
+    if dry:
+        print("[herdr] " + ("orc-flow already linked from this clone" if linked_from == str(src)
+                            else f"would link {src}") + f"; would add its keybinding to {herdr_tui_config() / 'config.toml'}")
+        return True
+    if linked_from != str(src):
+        if linked_from:  # another clone, or this one moved: relink
+            herdr_tui("plugin", "unlink", HERDR_PLUGIN)
+        r = herdr_tui("plugin", "link", str(src))
+        if r.returncode != 0:
+            print(f"[herdr] herdr plugin link failed:\n{(r.stdout + r.stderr).strip()}")
+            return False
+    ok, out = orc_flow_keys("setup")
+    print(f"[herdr] orc-flow " + ("linked from " if linked_from != str(src) else "already linked from ")
+          + f"{src}; {out.splitlines()[0] if out else ''}".rstrip("; "))
+    manifest[key] = {"clone": str(ROOT), "agents": [], "files": [], "plugin": str(src),
+                     "installed": datetime.datetime.now().isoformat(timespec="seconds")}
+    return ok
+
+
+def uninstall_herdr(dry, manifest):
+    key = f"herdr|{herdr_tui_config()}"
+    if key not in manifest:
+        print(f"[herdr] nothing recorded for {herdr_tui_config()}")
+        return
+    if dry:
+        print(f"[herdr] would unlink orc-flow and remove its keybinding block")
+        return
+    if shutil.which("herdr") and herdr_linked_path():
+        herdr_tui("plugin", "unlink", HERDR_PLUGIN)
+    _, out = orc_flow_keys("remove")
+    print(f"[herdr] unlinked orc-flow; {out}")
+    manifest.pop(key)
+
+
 def link_health(paths):
     """'links=N', plus the broken links and the copies left from before links."""
     paths = [Path(p) for p in paths]
@@ -875,6 +955,13 @@ def status(manifest):
     if not manifest:
         print("no installs recorded on this machine")
     for key, e in sorted(manifest.items()):
+        if key.startswith("herdr|"):
+            print(f"herdr     {key.split('|', 1)[1]}  plugin=orc-flow linked from {e['plugin']}  ({e['installed']})")
+            continue
+        if key.startswith("herdr-app-extras|"):
+            mods = ", ".join(f"{n}@{x['ref'][:7]}" for n, x in sorted(e.get("extras", {}).items()))
+            print(f"extras    {key.split('|', 1)[1]}  {mods}  {link_health(e['files'])}  ({e['installed']})")
+            continue
         if key.startswith("herdr-app|"):
             print(f"herdr-app {key.split('|', 1)[1]}  layout={e['layout']}  {link_health(e['files'])}  "
                   f"from {e['clone']}  ({e['installed']})")
@@ -887,7 +974,8 @@ def status(manifest):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cli", help="comma-separated: " + ", ".join(CLIS) + " (default: those on PATH)")
-    ap.add_argument("--scope", choices=["global", "project"], default="global")
+    ap.add_argument("--scope", choices=["user", "global", "project"], default="user",
+                    help="user (same as global: your home folder) or project")
     ap.add_argument("--project", type=Path, default=Path.cwd(), help="project dir for --scope project")
     ap.add_argument("--agents", default="hcorc,herdorc", help="orchestrators to install")
     ap.add_argument("--dry-run", action="store_true")
@@ -897,7 +985,11 @@ def main():
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--herdr-app", action="store_true",
                     help="install (or with --uninstall remove) only the Herdr desktop Skills panel")
+    ap.add_argument("--herdr", action="store_true",
+                    help="install (or with --uninstall remove) only the orc-flow plugin in the herdr TUI")
     a = ap.parse_args()
+    if a.scope == "user":
+        a.scope = "global"
 
     manifest = load_manifest()
     if a.status:
@@ -908,6 +1000,15 @@ def main():
             uninstall_herdr_app(a.dry_run, manifest)
         else:
             ok = install_herdr_app(a.dry_run, a.force, manifest)
+        if not a.dry_run:
+            save_manifest(manifest)
+        return 0 if ok else 1
+    if a.herdr:
+        ok = True
+        if a.uninstall:
+            uninstall_herdr(a.dry_run, manifest)
+        else:
+            ok = install_herdr(a.dry_run, manifest)
         if not a.dry_run:
             save_manifest(manifest)
         return 0 if ok else 1

@@ -21,38 +21,75 @@ set of sources and maps the neutral tool terms ("ask tool", "subagent tool",
 
 ## Install
 
+Clone the repo on the machine, then run the scripts from the clone. Nothing
+is copied: every installed file is a symlink into the clone.
+
 ```sh
 git clone https://github.com/TommiL90/herdr-orchestrator.git
 cd herdr-orchestrator
-python3 install.py                      # every supported CLI on PATH, for all projects
+./install.sh                 # everything this machine has
+./install.sh --extras        # plus the third-party Herdr app mods (below)
 ```
+
+`./install.sh` installs into each coding CLI on PATH, adds the Skills panel
+if the Herdr app is installed, and links orc-flow if `herdr` is on PATH. It
+skips what the machine does not have. `--uninstall` removes all of it,
+`--status` lists what is installed, and `--dry-run` shows what would change.
+
+One target at a time: `installers/<target>.sh`, each with `--help`.
+
+| Script | Installs | Scope |
+|---|---|---|
+| `installers/claude.sh` | agents, slash commands, hooks, the Claude Code-only mods | user or project |
+| `installers/opencode.sh` | primary agents, subagents, slash commands | user or project |
+| `installers/agy.sh` | main agents, subagents | user or project |
+| `installers/codex.sh` | roles as custom agents, orchestrators as profiles | user or project (profiles: user) |
+| `installers/cursor.sh` | orchestrators as skills, roles as subagents | user or project |
+| `installers/herdr-app.sh` | the Skills panel in the Herdr app | user |
+| `installers/herdr.sh` | orc-flow in the herdr TUI, with its keybinding | user |
+| `installers/herdr-app-extras.sh` | third-party Herdr app mods, pinned | user |
+
+```sh
+installers/agy.sh                                  # for your user: ~/.gemini/config
+installers/agy.sh --scope project --project ~/code/app   # for one project: ~/code/app/.agents
+installers/agy.sh --uninstall --scope project --project ~/code/app
+```
+
+There are two scopes. `user` (the default) installs into your home folder,
+where the CLI reads it in every project; `global` is the same scope under its
+old name, since none of these CLIs has a machine-wide folder. `project`
+installs into one project's folder. The CLI scripts also take these options:
 
 | Option | Effect |
 |---|---|
-| `--cli claude,opencode,agy,codex,cursor` | only these CLIs (default: the ones on PATH) |
-| `--scope project --project DIR` | install into one project instead of your user config |
+| `--scope user\|project`, `--project DIR` | where to install (project default: current dir) |
 | `--agents hcorc` | one orchestrator only (the roles always install) |
 | `--dry-run` | show what would change |
-| `--uninstall` | remove what install.py wrote (same `--cli`/`--scope` selection) |
-| `--status` | installs recorded on this machine (`~/.local/state/orc/installs.json`) |
-| `--force` | also overwrite files install.py did not write (refused by default) |
-| `--no-mods` | skip the Claude Code-only mods (plugins in `mods/`) |
-| `--herdr-app` | install only the Herdr desktop Skills panel (below); with `--uninstall`, remove it |
+| `--uninstall` | remove what the script wrote (same `--scope`) |
+| `--force` | also overwrite files the scripts did not write (refused by default) |
+| `--no-mods` | `claude.sh` only: skip the Claude Code-only mods (plugins in `mods/`) |
 
-Installs are symlinks. `install.py` generates each CLI's files into the
-clone's `dist/` (git-ignored), and every file in a CLI's folder is a link to
-its file there. `ls -l` shows what came from this repo. The Herdr desktop
-mod is built in `dist/` too, with its generated `config.js`, and Herdr's
-`mods/orc-skills` is one link to that folder; Herdr refuses a mod file whose
-real path is outside the mod's folder.
+The scripts are thin wrappers around `python3 install.py` (`--cli`,
+`--herdr-app`, `--herdr`) and `python3 herdr-app/extras.py`, which take the
+same options. They need Python 3.9 or later; orc-flow also needs Node.js
+22.5 or later.
 
-After `git pull`, run `python3 install.py` again: the links stay, and their
+### How the links work
+
+`install.py` generates each CLI's files into the clone's `dist/`
+(git-ignored), and every file in a CLI's folder is a link to its file there.
+`ls -l` shows what came from this repo. The Herdr desktop mods are built in
+`dist/` too, and each folder in Herdr's `mods/` is one link to its build;
+Herdr refuses a mod file whose real path is outside the mod's folder. orc-flow
+is linked by herdr itself (`herdr plugin link` to `herdr/plugins/orc-flow`).
+
+After `git pull`, run `./install.sh` again: the links stay, and their
 targets are regenerated. A rerun only rewrites what changed and removes the
 links it no longer produces. Moving or deleting the clone breaks every link;
-`python3 install.py --status` flags broken links, and running the installer
-from the new place repairs them. Files that are merged rather than linked,
-because other tools share them, are Claude Code's `settings.json` (hooks) and
-the Herdr layout. Copies left by older versions of the installer turn into
+`./install.sh --status` flags broken links, and running it from the new
+place repairs them. Files that are merged rather than linked,
+because other tools share them, are Claude Code's `settings.json` (hooks),
+the Herdr layout and `keys.json`, and herdr's `config.toml`. Copies left by older versions of the installer turn into
 links on the next run.
 
 ## What each CLI gets
@@ -74,7 +111,7 @@ Start an orchestrator from inside a Herdr pane (`hcorc`) or a herdr pane
 
 ### Skills panel in Herdr desktop
 
-`python3 install.py --herdr-app` adds a **Skills** button beside Herdr's tab
+`installers/herdr-app.sh` adds a **Skills** button beside Herdr's tab
 bar. It opens a collapsible panel next to Files and Changes. The panel shows
 which skills the orchestrator will use in the focused terminal's project:
 its own skills, the project's and yours. It also lists each same-name
@@ -87,8 +124,34 @@ Herdr's own layouts are read-only. If the shown layout is one of them, the
 installer clones `main` as `main-orc` and switches to it; your own layout
 gets the two nodes in place. Herdr's mods (tabs, Files, Changes...) stay
 Herdr's and keep updating, but the clone's structure does not. To rebuild
-it from a newer `main`, run `--herdr-app --uninstall`, then `--herdr-app`.
+it from a newer `main`, run `installers/herdr-app.sh --uninstall`, then
+`installers/herdr-app.sh`.
 The mod lives in `herdr-app/mods/orc-skills/`.
+
+### Third-party Herdr app mods
+
+`installers/herdr-app-extras.sh` (or `./install.sh --extras`) installs the
+Herdr app mods this setup uses. Each one is pinned in
+`herdr-app/extras.json` to the commit whose code was reviewed:
+
+| Mod | From | Gives |
+|---|---|---|
+| herdr-nvim | ChmaraX/herdr-nvim | Neovim beside the agents (`cmd-e`, `cmd-o`, `cmd-shift-e`) |
+| gitview | ChmaraX/herdr-gitview | the Changes panel (`cmd-shift-g`, `cmd-g`) |
+| file-icons | cybertron288/herdr-mods | the Files panel with icons, in a split (`cmd-shift-f`) |
+| filetree | cybertron288/herdr-mods | a file tree in the Files slot |
+| markdown-panel | jlopezlira/herdr-kanso | rendered markdown (`cmd-shift-m`) |
+| agent-flow | MarcozVD/herdr-agent-flow | the agents as a graph (`ctrl-shift-g`, `cmd-alt-g`), patched to draw `orc.py` handoffs |
+
+It downloads their code from GitHub. herdr-nvim and gitview run their own
+installers, which also download their release binary (checked against its
+SHA-256) and edit the shown layout; herdr-nvim needs Neovim 0.10 or later.
+The others are built into `dist/` and linked. Keys go only where
+`keys.json` has them free. `--only filetree,gitview` picks some, `--list`
+says what each is, and `--uninstall` takes them out, giving the Files slot
+and the keys back. A mod folder the scripts did not write is refused;
+`--force` moves it to `<herdr home>/<name>.before-orc` and puts it back on
+uninstall.
 
 ### Limitations
 
@@ -115,8 +178,7 @@ panes are herdorc's from herdorc's state file. It is a port of the Herdr
 desktop mod herdr-agent-flow.
 
 ```sh
-herdr plugin link herdr/plugins/orc-flow
-herdr plugin action invoke orc-flow.setup-keys   # prefix+shift+z opens it as an overlay
+installers/herdr.sh          # herdr plugin link + prefix+shift+z, which opens it as an overlay
 ```
 
 The actions `orc-flow.open-split` and `orc-flow.open-tab` open it in a split
@@ -133,7 +195,9 @@ or a tab. It needs Node.js 22.5 or newer. Details:
 ## Layout
 
 ```
-install.py               generator + installer for every CLI and scope
+install.sh               installs everything this machine has (runs the scripts below)
+installers/              one script per target: claude, opencode, agy, codex, cursor, herdr-app, herdr, herdr-app-extras
+install.py               generator + installer for every CLI and scope, the Skills panel and orc-flow
 shared/core/odd-core.md  ODD core prompt (ported from tomidev-shell)
 shared/docs/             ODD reference docs, read at runtime
 shared/roles/            role prompts + roles.json (tools, model)
@@ -142,7 +206,8 @@ shared/vendor/herdr/     upstream herdr skill + UPSTREAM.json
 shared/bin/orc.py        runtime helper: role lookup, role panes, ensure, phase (`--as <agent>` outside Claude)
 shared/bin/guard.py      Claude Code PreToolUse guard for hc / herdr commands
 layers/                  per-orchestrator layers, shared section, slash-command templates
-herdr-app/mods/         Herdr desktop mods, any CLI (orc-skills: the Skills panel; install.py --herdr-app)
+herdr-app/mods/          Herdr desktop mods, any CLI (orc-skills: the Skills panel; install.py --herdr-app)
+herdr-app/extras.*       third-party Herdr app mods, pinned (extras.json), and their installer
 mods/, .claude-plugin/   Claude Code-only plugins (orc-cache: prompt-cache meter, wait guard) + marketplace
 scripts/                 port scripts (tomidev-shell -> shared/), herdr skill sync, build-agents.py
 herdr/plugins/orc-flow/  herdr plugin, any CLI: herdorc and its role panes as a live graph (Node)
@@ -152,7 +217,7 @@ tests/                   test_install.sh, test_guard.sh, test_orc_herdr.sh, test
 ## Development
 
 - Edit the sources (`shared/`, `layers/`), never the generated files. Then
-  run `python3 install.py`, or `python3 scripts/build-agents.py` to rebuild
+  run `./install.sh`, or `python3 scripts/build-agents.py` to rebuild
   only this repo's `.claude/`.
 - Layers can hold `<!-- if:hooks -->` / `<!-- if:commands -->` blocks (and
   `if:!…`). They are kept or dropped by what each CLI supports.

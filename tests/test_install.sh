@@ -122,5 +122,71 @@ check "herdr-app: uninstall restores the personal layout" "HP --uninstall >/dev/
 mkdir -p "$H/mods/orc-skills" && echo mine > "$H/mods/orc-skills/main.js"
 check "herdr-app: someone else's orc-skills mod is refused" "! HP >/dev/null && [ \"\$(cat '$H/mods/orc-skills/main.js')\" = mine ]"
 
+# 10. installers/<cli>.sh: one target, user or project scope
+P2=$T/proj2; mkdir -p "$P2"
+check "installers/agy.sh --scope project links into the project" "'$REPO/installers/agy.sh' --scope project --project '$P2' >/dev/null && [ -L '$P2/.agents/agents/hcorc/agent.md' ]"
+check "installers/agy.sh --uninstall --scope project removes them" "'$REPO/installers/agy.sh' --uninstall --scope project --project '$P2' >/dev/null && [ ! -e '$P2/.agents/agents/hcorc/agent.md' ]"
+check "--scope user is the home folder, recorded as global" "'$REPO/installers/agy.sh' --scope user >/dev/null && [ -L '$HOME/.gemini/config/agents/hcorc/agent.md' ] && python3 '$REPO/install.py' --status | grep -q '^agy *global'"
+check "installers/agy.sh --help shows its usage" "'$REPO/installers/agy.sh' --help | grep -q 'scope project'"
+
+# 11. install.py --herdr: orc-flow in the herdr TUI. A stub herdr records the
+# calls, and the keybinding goes to an isolated XDG_CONFIG_HOME.
+X=$T/xdg; mkdir -p "$X"
+cat > "$T/bin/herdr" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/herdr-tui-calls"
+case "\$1 \$2" in
+  "plugin list") [ -f "$T/linked" ] && echo "- orc-flow (orc-flow) enabled [local:\$(cat "$T/linked")]"; exit 0 ;;
+  "plugin link") echo "\$3" > "$T/linked"; exit 0 ;;
+  "plugin unlink") rm -f "$T/linked"; exit 0 ;;
+esac
+exit 1
+EOF
+chmod +x "$T/bin/herdr"
+HT() { PATH="$T/bin:$PATH" XDG_CONFIG_HOME=$X python3 "$REPO/install.py" --herdr "$@"; }
+check "herdr: links orc-flow from this clone" "HT >/dev/null && [ \"\$(cat '$T/linked')\" = '$REPO/herdr/plugins/orc-flow' ]"
+check "herdr: binds prefix+shift+z in herdr's config" "grep -q 'orc-flow.open' '$X/herdr/config.toml'"
+check "herdr: a rerun links only once" "HT >/dev/null && [ \$(grep -c '^plugin link' '$T/herdr-tui-calls') = 1 ]"
+check "herdr: status lists it" "XDG_CONFIG_HOME=$X python3 '$REPO/install.py' --status | grep -q '^herdr .*orc-flow'"
+check "herdr: uninstall unlinks and removes the key block" "HT --uninstall >/dev/null && [ ! -f '$T/linked' ] && ! grep -q orc-flow '$X/herdr/config.toml'"
+
+# 12. herdr-app/extras.py with a stand-in list and local sources: no network.
+SRC=$T/src; mkdir -p "$SRC/acme-mods/alpha/mods/alpha" "$SRC/acme-mods/tree/mods/tree" "$SRC/acme-tool"
+echo '{"name": "alpha"}' > "$SRC/acme-mods/alpha/mods/alpha/mod.json"
+echo 'const V = 1;' > "$SRC/acme-mods/alpha/mods/alpha/main.js"
+echo '{"name": "tree"}' > "$SRC/acme-mods/tree/mods/tree/mod.json"
+printf '%s\n' '--- a/mods/alpha/main.js' '+++ b/mods/alpha/main.js' '@@ -1 +1 @@' '-const V = 1;' '+const V = 2;' > "$T/alpha.patch"
+printf '%s\n' 'if [ "$1" = --uninstall ]; then rm -f "$HERDR_APP_HOME/tool-installed"; else echo "$*" > "$HERDR_APP_HOME/tool-installed"; fi' > "$SRC/acme-tool/install.sh"
+cat > "$T/spec.json" <<EOF
+{"mods": {
+ "tool": {"repo": "acme/tool", "ref": "1111111111", "license": "MIT", "about": "t",
+          "installer": ["sh", "install.sh", "--app"], "uninstaller": ["sh", "install.sh", "--uninstall"]},
+ "alpha": {"repo": "acme/mods", "ref": "2222222222", "license": "MIT", "about": "a", "copy": "alpha/mods/alpha",
+           "patch": "$T/alpha.patch", "keys": {"cmd-alt-a": "mod.open:alpha", "cmd-shift-m": "mod.open:alpha"}},
+ "tree": {"repo": "acme/mods", "ref": "2222222222", "license": "MIT", "about": "f", "copy": "tree/mods/tree",
+          "needs": ["alpha"], "files_slot": true}}}
+EOF
+echo '{"global": {"cmd-shift-m": "mod.open:someone-else"}}' > "$H/keys.json"
+cat > "$H/layouts/main.json" <<'EOF'
+{"id": "root", "type": "row", "children": [{"id": "panel", "type": "column", "size": {"px": 368},
+  "children": [{"id": "panel-body", "type": "stack", "children": [{"id": "files", "type": "block", "content": {"mod": "files"}}]}]}]}
+EOF
+sed 's/"px": 368/"px": 300/' "$H/layouts/main.json" > "$H/layouts/mine2.json"; echo '{"layout": "mine2"}' > "$H/shared.json"
+E() { PATH="$T/bin:$PATH" ORC_EXTRAS_SPEC=$T/spec.json ORC_EXTRAS_SRC=$SRC python3 "$REPO/herdr-app/extras.py" "$@"; }
+check "extras: --only tree brings what it needs, nothing else" "E --only tree >/dev/null && [ -L '$H/mods/alpha' ] && [ -L '$H/mods/tree' ] && [ ! -e '$H/tool-installed' ]"
+check "extras: a copied mod links to its patched build in dist" "[ \"\$(readlink '$H/mods/alpha')\" = '$ORC_DIST/abs${H}/mods/alpha' ] && grep -q 'V = 2' '$H/mods/alpha/main.js' && grep -q 'V = 1' '$SRC/acme-mods/alpha/mods/alpha/main.js' && [ -f '$H/mods/alpha/.orc-extra' ]"
+check "extras: free keys added, a taken one left alone" "python3 -c \"import json;g=json.load(open('$H/keys.json'))['global'];assert g['cmd-alt-a']=='mod.open:alpha' and g['cmd-shift-m']=='mod.open:someone-else',g\""
+check "extras: files_slot mod takes the Files slot at Herdr's panel width" "python3 -c \"import json;s=json.dumps(json.load(open('$H/layouts/mine2.json')));assert '{\\\"mod\\\": \\\"tree\\\"}' in s and '368' in s,s\""
+check "extras: a mod with its own installer runs it from the pinned source" "E >/dev/null && grep -q -- '--app' '$H/tool-installed'"
+check "extras: status lists them with their pins" "python3 '$REPO/install.py' --status | grep -q 'extras .*alpha@2222222'"
+E --uninstall --only alpha >/dev/null; mkdir -p "$H/mods/alpha" && echo mine > "$H/mods/alpha/main.js"
+check "extras: someone else's mod folder is refused" "! E --only alpha >/dev/null && [ \"\$(cat '$H/mods/alpha/main.js')\" = mine ]"
+check "extras: --force moves it aside and links ours" "E --only alpha --force >/dev/null && [ -L '$H/mods/alpha' ] && [ -f '$H/alpha.before-orc/main.js' ]"
+check "extras: uninstall gives back slot, width and keys, runs the uninstaller, restores the moved mod" "E --uninstall >/dev/null && python3 -c \"import json;s=json.dumps(json.load(open('$H/layouts/mine2.json')));assert '{\\\"mod\\\": \\\"files\\\"}' in s and '300' in s,s;g=json.load(open('$H/keys.json'))['global'];assert 'cmd-alt-a' not in g and g['cmd-shift-m']=='mod.open:someone-else',g\" && [ ! -e '$H/tool-installed' ] && [ ! -L '$H/mods/tree' ] && [ \"\$(cat '$H/mods/alpha/main.js')\" = mine ] && [ ! -e '$ORC_DIST/abs${H}/mods/tree' ]"
+
+# 13. ./install.sh: every part this machine has, in the same throwaway HOME.
+check "install.sh --dry-run walks every step" "PATH='$T/bin':\$PATH XDG_CONFIG_HOME=$X '$REPO/install.sh' --dry-run --cli agy --extras=tree 2>&1 | grep -q 'Herdr app: third-party mods' "
+check "install.sh --scope project skips the per-user parts" "'$REPO/install.sh' --cli agy --scope project --project '$P2' 2>&1 | grep -q 'per user, not per project' && [ -L '$P2/.agents/agents/hcorc/agent.md' ]"
+
 echo "install: pass=$pass fail=$fail"
 [ "$fail" = 0 ]

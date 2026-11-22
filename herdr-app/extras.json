@@ -1,0 +1,46 @@
+{
+  "_comment": "Third-party Herdr app mods that herdr-app/extras.py installs, each pinned to the commit whose code was reviewed. Order matters: herdr-nvim takes the Files slot and filetree then takes it over. Bump a ref only after reading the new code.",
+  "mods": {
+    "herdr-nvim": {
+      "repo": "ChmaraX/herdr-nvim", "ref": "2905408e1985db1a319b466ba9873f40e29f5e7a", "license": "MIT",
+      "about": "Neovim beside your agents (cmd-e, cmd-o, cmd-shift-e). Its installer downloads the herdr-nvim binary of the release into ~/.local/share/herdr-nvim, checked against its SHA-256, and edits the shown layout; it needs Neovim 0.10+.",
+      "installer": ["sh", "install.sh", "--app", "--version", "v1.3.1"],
+      "uninstaller": ["sh", "install.sh", "--app", "--uninstall", "--version", "v1.3.1"]
+    },
+    "gitview": {
+      "repo": "ChmaraX/herdr-gitview", "ref": "f69e71bbbb53237c27d8282c1d4a95d11380daf1", "license": "MIT",
+      "about": "Replaces the Changes panel (cmd-shift-g sidebar, cmd-g tab). Its installer downloads the herdr-gitview binary of the release, checked against its SHA-256.",
+      "installer": ["sh", "install.sh", "--app", "--version", "v0.6.0"],
+      "uninstaller": ["sh", "install.sh", "--app", "--uninstall", "--version", "v0.6.0"]
+    },
+    "file-icons": {
+      "repo": "cybertron288/herdr-mods", "ref": "34e7c3348e954fd0a1147b846898db8c3e37e526", "license": "MIT",
+      "about": "Herdr's Files panel with Material icons, in a split (cmd-shift-f). filetree reads its icons.",
+      "copy": "file-icons/mods/file-icons",
+      "keys": {"cmd-shift-f": {"command": "pane.split", "args": {"direction": "right", "mod": "file-icons"}}}
+    },
+    "filetree": {
+      "repo": "cybertron288/herdr-mods", "ref": "34e7c3348e954fd0a1147b846898db8c3e37e526", "license": "MIT",
+      "about": "A file tree with icons in the Files slot of the side panel.",
+      "copy": "filetree/mods/filetree",
+      "needs": ["file-icons"],
+      "files_slot": true
+    },
+    "markdown-panel": {
+      "repo": "jlopezlira/herdr-kanso", "ref": "e40f7bda3cc975d38aa0b82a6b53f9e325e4e9e6", "license": "Apache-2.0",
+      "about": "Rendered markdown beside the terminal (cmd-shift-m).",
+      "copy": "markdown-panel/mods/markdown-panel",
+      "keys": {"cmd-shift-m": "mod.open:markdown-panel"}
+    },
+    "agent-flow": {
+      "repo": "MarcozVD/herdr-agent-flow", "ref": "1201a7c5aeec5eb5e8a2190355da694c7de8f0d3", "license": "MIT",
+      "about": "The agents of a space as a graph (ctrl-shift-g overlay, cmd-alt-g split), patched to draw orc.py handoffs.",
+      "copy": "mods/agent-flow",
+      "patch": "herdr-app/patches/agent-flow/orc-handoff.patch",
+      "keys": {
+        "ctrl-shift-g": "mod.open:agent-flow",
+        "cmd-alt-g": {"command": "pane.split", "args": {"direction": "right", "mod": "agent-flow"}}
+      }
+    }
+  }
+}

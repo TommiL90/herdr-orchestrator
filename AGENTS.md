@@ -15,7 +15,12 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
   `dist/` (git-ignored; `$ORC_DIST` overrides it) and links each install
   location to them. Never edit generated files, nor the files behind the
   links; edit the source and regenerate. Shared files (`settings.json`
-  hooks, Herdr layouts) are merged, never linked.
+  hooks, Herdr layouts and `keys.json`, herdr's `config.toml`) are merged,
+  never linked.
+- Installing is `./install.sh` (every part the machine has) or
+  `installers/<target>.sh` (one part). They are thin wrappers: the logic
+  stays in `install.py` and `herdr-app/extras.py`. A new install option goes
+  there, then into the wrapper's help and the README table.
 - `shared/core`, `shared/docs`, `shared/roles` and most of `shared/skills`
   are ported from tomidev-shell by `scripts/port-*.py`, with every change
   recorded in `shared/PROVENANCE-*.md`. Change a ported text through its
@@ -57,6 +62,10 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
   the herdr commands herdorc's layer uses to prompt and read role panes, and
   report files named `<pane-name>-<task>.md`; keep them in step with
   `layers/herdorc.md`.
+- `herdr-app/extras.json` pins each third-party Herdr app mod to a commit
+  whose code was read. Bump a `ref` only after reading the new code, and
+  check that `herdr-app/patches/agent-flow` still applies to a new agent-flow.
+  Tests use `ORC_EXTRAS_SPEC` and `ORC_EXTRAS_SRC`, never the network.
 - `herdr plugin link` writes to herdr's config, which every herdr session
   shares. Link the plugin for tests only in a herdr whose config is isolated
   (`XDG_CONFIG_HOME=<short dir>`, since herdr's socket path must stay short),
@@ -65,7 +74,8 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
 ## Commands
 
 - Regenerate this repo's `.claude/`: `python3 scripts/build-agents.py`
-- Install elsewhere: `python3 install.py --help`
+- Install: `./install.sh --help`, `installers/<target>.sh --help`,
+  `python3 install.py --help`
 - Tests: `bash tests/test_install.sh` (self-contained), then
   `bash tests/test_guard.sh`, `bash tests/test_orc_herdr.sh`,
   `bash tests/test_orc_hc.sh` (need herdr / Herdr desktop).
