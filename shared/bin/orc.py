@@ -15,6 +15,7 @@ Subcommands:
                                   create one role pane, optionally starting an agent
   phase <phase>|clear             set the ODD phase indicator (explicit)
   phase --hook                    PostToolUse hook: infer the phase from tool activity
+  skills [--json]                 same-name skill conflicts: which copy is used, which it shadows
 
 The agent is taken from a leading `--as <agent>` (how install.py calls orc.py from
 CLIs other than Claude Code) or else $CLAUDE_CODE_AGENT (set by `claude --agent <name>`).
@@ -653,6 +654,87 @@ def cmd_phase(argv):
     print(f"phase: {argv[0]}")
 
 
+# ------------------------------------------------------------ skill conflicts
+SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+PROJECT_SKILL_DIRS = (".claude/skills", ".agents/skills", ".opencode/skills", ".cursor/skills", ".codex/skills")
+
+
+def user_skill_dirs():
+    home = Path.home()
+    return [home / ".claude/skills", home / ".agents/skills", home / ".gemini/config/skills",
+            Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config") / "opencode/skills",
+            home / ".cursor/skills", Path(os.environ.get("CODEX_HOME") or home / ".codex") / "skills"]
+
+
+def skill_name(skill_md):
+    try:
+        head = skill_md.read_text(errors="ignore")[:3000]
+    except OSError:
+        return skill_md.parent.name
+    fm = re.match(r"\A---\n(.*?)\n---", head, flags=re.S)
+    m = re.search(r"^name:\s*[\"']?([^\"'\n]+?)[\"']?\s*$", fm.group(1), flags=re.M) if fm else None
+    return m.group(1).strip() if m else skill_md.parent.name
+
+
+def scan_skills(dirs, scope, seen):
+    out = []
+    for d in dirs:
+        for md in sorted(d.glob("*/SKILL.md")) if d.is_dir() else []:
+            real = md.resolve()
+            if real in seen or (md.parent / ".orc-generated").exists():  # copies older builds made
+                continue
+            seen.add(real)
+            out.append((skill_name(md), scope, md))
+    return out
+
+
+def project_root():
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return Path(r.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return Path.cwd()
+
+
+def tilde(path):
+    text, home = str(path), str(Path.home())
+    return "~" + text[len(home):] if text.startswith(home + os.sep) else text
+
+
+def cmd_skills(argv):
+    """Same-name conflicts between the project's or user's skills and this orchestrator's
+    copies. The first copy wins: project, then user, then the orchestrator's (as tomidev's
+    registry dedupes); same-purpose conflicts under other names are left to the agent."""
+    ours = {skill_name(md): md for md in sorted(SKILLS_DIR.glob("*/SKILL.md"))}
+    root, seen = project_root(), {md.resolve() for md in ours.values()}
+    bases = [Path.cwd()] + ([root] if root.resolve() != Path.cwd().resolve() else [])
+    found = scan_skills([b / d for b in bases for d in PROJECT_SKILL_DIRS], "project", seen)
+    found += scan_skills(user_skill_dirs(), "user", seen)
+    conflicts = []
+    for name, md in ours.items():
+        copies = [{"scope": scope, "path": str(path)} for n, scope, path in found if n == name]
+        if copies:
+            copies.append({"scope": "orchestrator", "path": str(md)})
+            conflicts.append({"skill": name, "use": copies[0], "shadows": copies[1:]})
+    if "--json" in argv:
+        # Every skill seen, in precedence order; `used` marks the copy that wins its name.
+        rows, winners = [], set()
+        for name, scope, path in found + [(n, "orchestrator", md) for n, md in ours.items()]:
+            rows.append({"name": name, "scope": scope, "path": str(path), "used": name not in winners})
+            winners.add(name)
+        print(json.dumps({"project": str(root), "conflicts": conflicts, "skills": rows}, indent=1))
+        return
+    if not conflicts:
+        print(f"skills: no same-name conflicts with the orchestrator's {len(ours)} skills ({tilde(root)})")
+        return
+    print(f"skill conflicts (same name) in {tilde(root)}: the first copy is used")
+    for c in conflicts:
+        shadows = ", ".join(f"{x['scope']} {tilde(x['path'])}" for x in c["shadows"])
+        print(f"- {c['skill']}: uses {c['use']['scope']} {tilde(c['use']['path'])}; shadows {shadows}")
+
+
 def main():
     global AS_AGENT
     args = sys.argv[1:]
@@ -664,7 +746,8 @@ def main():
         die(__doc__)
     cmd, argv = args[0], args[1:]
     handlers = {"preflight": cmd_preflight, "status": cmd_status, "role": cmd_role,
-                "panes": cmd_panes, "ensure": cmd_ensure, "phase": cmd_phase}
+                "panes": cmd_panes, "ensure": cmd_ensure, "phase": cmd_phase,
+                "skills": cmd_skills}
     if cmd not in handlers:
         die(__doc__)
     handlers[cmd](argv)

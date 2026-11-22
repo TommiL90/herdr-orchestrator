@@ -1,0 +1,10 @@
+{
+  "name": "orc-flow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "herdr plugin: herdorc and its role panes as a live graph (a port of agent-flow)",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.5" },
+  "scripts": { "test": "node --test test/" }
+}

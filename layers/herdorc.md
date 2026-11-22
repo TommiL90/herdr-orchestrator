@@ -30,6 +30,7 @@ the herdr skill". Where the two seem to disagree anywhere else, the skill wins.
 2. `herdr status` (client/server versions, as the skill says).
 3. `{{ORC}} status`: role panes in your workspace and who owns them.
 4. `mkdir -p {{REPORTS}}/handoffs`.
+5. `{{ORC}} skills`: same-name skill conflicts (see "Which skill wins").
 
 ## Deliberate departures from the herdr skill
 

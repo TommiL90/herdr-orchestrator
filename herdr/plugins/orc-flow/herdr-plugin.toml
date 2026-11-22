@@ -1,0 +1,59 @@
+id = "orc-flow"
+name = "orc-flow"
+version = "0.1.0"
+description = "herdorc and its role panes as a live graph: each pane's CLI, model and status, and the messages between them. Any coding CLI."
+platforms = ["macos", "linux"]
+
+# `agent_session` on panes and agents (herdr 0.8.2) pairs each pane with its session
+# exactly; `api snapshot` gives every pane and agent in one call. Tested on 0.9.5.
+min_herdr_version = "0.9.5"
+
+# `plugin install` runs this; `plugin link` does not. It only checks that Node 22.5+
+# (for node:sqlite, which reads Codex's and opencode's databases) is on PATH.
+[[build]]
+command = ["sh", "bin/check-node.sh"]
+
+# Overlay: a temporary zoomed pane over the focused one; closing it restores the layout.
+# A look, not a place to work. The actions below open it as a split or a tab instead.
+[[panes]]
+id = "graph"
+title = "orc-flow"
+placement = "overlay"
+command = ["node", "bin/orc-flow.mjs"]
+
+[[actions]]
+id = "open"
+title = "orc-flow: herdorc graph (overlay)"
+description = "Show herdorc, its role panes, their models and status, and recent messages, over the focused pane. Closing it restores your layout."
+contexts = ["pane", "workspace"]
+command = ["sh", "bin/open.sh", "overlay"]
+
+[[actions]]
+id = "open-split"
+title = "orc-flow: herdorc graph (split)"
+description = "The same graph, split beside the focused pane. Stays until you close it."
+contexts = ["pane", "workspace"]
+command = ["sh", "bin/open.sh", "split"]
+
+[[actions]]
+id = "open-tab"
+title = "orc-flow: herdorc graph (tab)"
+description = "The same graph in its own tab: full size, one tab switch from herdorc."
+contexts = ["pane", "workspace"]
+command = ["sh", "bin/open.sh", "tab"]
+
+# herdr binds keys only from the user's config, so the default key is installed by an
+# action: one marker-fenced block, backed up first, removable by the sibling action.
+[[actions]]
+id = "setup-keys"
+title = "orc-flow: install the default keybinding"
+description = "Bind prefix+shift+z to the overlay, with the split and tab placements beside it as comments. One block in your herdr config, backed up first."
+contexts = ["workspace"]
+command = ["node", "bin/keys.mjs", "setup"]
+
+[[actions]]
+id = "remove-keys"
+title = "orc-flow: remove the default keybinding"
+description = "Delete the block setup-keys wrote."
+contexts = ["workspace"]
+command = ["node", "bin/keys.mjs", "remove"]

@@ -2,9 +2,11 @@
 """Install the hcorc and herdorc orchestrators into coding-agent CLIs.
 
 hcorc drives Herdr desktop (herdr-app + herdr-core `hc`); herdorc drives the
-herdr terminal multiplexer. Both come with ten ODD role subagents. Everything
-is generated from shared/ and layers/ and points at this clone by absolute
-path, so re-run it after pulling changes or moving the clone.
+herdr terminal multiplexer. Both come with ten ODD role subagents. Each CLI
+file is generated from shared/ and layers/ into this clone's dist/ (or
+$ORC_DIST), and the CLI's folder gets a symlink to it. Re-run it after pulling
+changes: the links stay, their targets are regenerated. Moving the clone
+breaks the links; re-run it from the new place.
 
 Usage:
   python3 install.py                       every supported CLI on PATH, global scope
@@ -16,6 +18,7 @@ Usage:
   python3 install.py --no-mods             skip the Claude Code-only mods (plugins in mods/)
   python3 install.py --uninstall [--cli ...] [--scope ...] [--project DIR]
   python3 install.py --status              installs recorded on this machine
+  python3 install.py --herdr-app [--uninstall]   the Herdr desktop Skills panel (any CLI)
 
 Where each CLI gets what (global | project):
   claude    ~/.claude | .claude             agents, /<agent>-* commands, guard + phase hooks,
@@ -214,12 +217,64 @@ def toml_file(fields):
     return "\n".join(lines) + "\n"
 
 
+def dist_root():
+    return Path(os.environ.get("ORC_DIST") or ROOT / "dist")
+
+
+def dist_path(target):
+    """Where the generated file behind an installed link lives: dist/home/<path
+    under $HOME>, else dist/abs/<absolute path>. Two installs that write the same
+    file (Codex profiles) share it."""
+    target = Path(os.path.abspath(target))
+    try:
+        return dist_root() / "home" / target.relative_to(home())
+    except ValueError:
+        return dist_root() / "abs" / target.relative_to(target.anchor)
+
+
+def present(path):
+    """Exists, or is a link (a broken one included)."""
+    return path.is_symlink() or path.exists()
+
+
+def link_dest(path):
+    return os.path.abspath(os.path.join(path.parent, os.readlink(path)))
+
+
+def linked(path, src):
+    return path.is_symlink() and link_dest(path) == os.path.abspath(src)
+
+
+def link(path, src):
+    """Point path at src, replacing whatever file or link is there in one step."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".orc-tmp")
+    if present(tmp):
+        tmp.unlink()
+    os.symlink(src, tmp)
+    os.replace(tmp, path)
+
+
+def prune(directory, stop):
+    """Remove empty directories from directory up to (not including) stop."""
+    directory, stop = Path(directory), Path(stop)
+    while directory != stop and stop in directory.parents and directory.is_dir() and not any(directory.iterdir()):
+        directory.rmdir()
+        directory = directory.parent
+
+
 def ours(path):
+    if path.is_symlink():
+        dest = link_dest(path)
+        # A link into dist/, this clone's or (after a move) an older one's.
+        if dest.startswith(os.path.abspath(dist_root()) + os.sep) or re.search(r"/dist/(home|abs)/", dest):
+            return True
     try:
         head = path.read_text(errors="ignore")[:600]
     except OSError:
         return False
-    # Slash commands from the first build-agents.py carried no marker, only this call.
+    # A copy from before installs were links. Slash commands from the first
+    # build-agents.py carried no marker, only this call.
     return any(m in head for m in OUR_MARKS) or "shared/bin/orc.py preflight" in head
 
 
@@ -511,9 +566,10 @@ def used_elsewhere(manifest, key):
 
 
 def remove_files(paths, keep, dry):
+    """Remove our links (or old copies) and the generated files behind them."""
     removed = []
     for p in map(Path, paths):
-        if str(p) in keep or not p.exists() or not ours(p):
+        if str(p) in keep or not present(p) or not ours(p):
             continue
         removed.append(p)
         if not dry:
@@ -521,15 +577,39 @@ def remove_files(paths, keep, dry):
             parent = p.parent  # per-agent dirs: agy agents/<name>/, cursor skills/<name>/
             if parent.parent.name in ("agents", "skills") and not any(parent.iterdir()):
                 parent.rmdir()
+            src = dist_path(p)
+            if src.is_file():
+                src.unlink()
+                prune(src.parent, dist_root())
     return removed
+
+
+def write_links(items, dry):
+    """items: {installed path: (link target, generated text or None)}. Writes
+    each generated text that changed into dist and (re)points each link.
+    Returns the paths whose link or target changed."""
+    changed = []
+    for p, (src, text) in items.items():
+        fresh = text is not None and (not src.is_file() or src.read_text() != text)
+        relink = not linked(p, src)
+        if not (fresh or relink):
+            continue
+        changed.append(p)
+        if dry:
+            continue
+        if fresh:
+            src.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text(text)
+        if relink:
+            link(p, src)
+    return changed
 
 
 # ------------------------------------------------------------------ actions
 def install(cli, scope, project, agents, dry, force, manifest, with_mods=True):
     base, files, shadows = plan(cli, scope, project, agents)
     key = f"{cli}|{scope}|{base}"
-    conflicts = [p for p in files if p.exists() and not ours(p)]
-    conflicts += [p for p in shadows if p.exists() and not ours(p)]
+    conflicts = [p for p in [*files, *shadows] if present(p) and not ours(p)]
     if conflicts and not force:
         print(f"[{cli}] not installed: these exist and were not written by install.py "
               f"(move them away or pass --force):")
@@ -538,18 +618,14 @@ def install(cli, scope, project, agents, dry, force, manifest, with_mods=True):
         return False
     old = set(manifest.get(key, {}).get("files", []))
     stale = remove_files(sorted(old - {str(p) for p in files}), used_elsewhere(manifest, key), dry)
-    changed = [p for p in files if not p.exists() or p.read_text() != files[p]]
-    if not dry:
-        for p in changed:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(files[p])
+    changed = write_links({p: (dist_path(p), text) for p, text in files.items()}, dry)
     settings = None
     if "hooks" in CLIS[cli]["caps"]:
         settings = base / "settings.json"
         merge_hooks(settings, hook_entries(scope, project), dry)
     installed_mods = install_mods(scope, project, dry) if cli == "claude" and with_mods else []
-    verb = "would write" if dry else "wrote"
-    print(f"[{cli}] {verb} {len(changed)} of {len(files)} files under {base}"
+    verb = "would update" if dry else "updated"
+    print(f"[{cli}] {verb} {len(changed)} of {len(files)} links under {base}"
           + (f" (+ codex profiles in {codex_home()})" if cli == "codex" else "")
           + (f"; hooks in {settings}" if settings else "")
           + (f"; removed {len(stale)} stale" if stale else ""))
@@ -574,18 +650,237 @@ def uninstall(cli, scope, project, dry, manifest):
         merge_hooks(Path(entry["settings"]), None, dry)
     uninstall_mods(entry, scope, project, dry,
                    any(e.get("mods") for k, e in manifest.items() if k != key))
-    print(f"[{cli}] {'would remove' if dry else 'removed'} {len(removed)} files"
+    print(f"[{cli}] {'would remove' if dry else 'removed'} {len(removed)} links"
           + ("; hooks removed from " + entry["settings"] if entry.get("settings") else ""))
     if not dry:
         manifest.pop(key)
+
+
+# ------------------------------------------------------------------ herdr-app
+# The Herdr desktop Skills panel: a herdr-app mod plus two layout nodes, a
+# button beside the tab bar and a collapsible column beside Files/Changes.
+# Herdr's own layouts are read-only, so a shipped one is cloned first.
+HERDR_MOD = "orc-skills"
+HERDR_LAYOUT = "main-orc"
+HERDR_MARKER = ".orc-generated"  # hidden: Herdr does not reload on it
+
+
+def herdr_home():
+    return Path(os.environ.get("HERDR_APP_HOME") or home() / ".config/herdr-app")
+
+
+def herdr_app(*args):
+    """Run herdr-app; None when it is missing or the window is not running."""
+    if not shutil.which("herdr-app"):
+        return None
+    try:
+        r = subprocess.run(["herdr-app", *args], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r
+
+
+def herdr_json(path, default):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def herdr_find(node, node_id, parent=None):
+    if node.get("id") == node_id:
+        return node, parent
+    for child in node.get("children", []):
+        found = herdr_find(child, node_id, node)
+        if found:
+            return found
+    return None
+
+
+def herdr_patch(tree):
+    """Add the button and the panel column once. False if the layout has no
+    `tabs` block or `work-body` row to put them beside."""
+    tabs, body = herdr_find(tree, "tabs"), herdr_find(tree, "work-body")
+    if not tabs or not body or tabs[1] is None:
+        return False
+    node, parent = tabs
+    if parent.get("id") != "orc-skills-bar":
+        parent["children"][parent["children"].index(node)] = {
+            "id": "orc-skills-bar", "type": "row", "size": node.get("size", {"px": 42}), "resizable": False,
+            "children": [dict(node, size={"weight": 1}),
+                         {"id": "orc-skills-toggle", "type": "block", "size": {"px": 104}, "window_drag": True,
+                          "content": {"mod": HERDR_MOD, "props": {"role": "toggle"}}}]}
+    if not herdr_find(tree, "orc-skills-panel"):
+        body[0]["children"].append({
+            "id": "orc-skills-panel", "type": "column", "hidden": True, "size": {"px": 360}, "min": 300, "max": 720,
+            "children": [{"id": "orc-skills", "type": "block", "content": {"mod": HERDR_MOD}}]})
+    return True
+
+
+def herdr_unpatch(tree):
+    bar = herdr_find(tree, "orc-skills-bar")
+    if bar:
+        node, parent = bar
+        tabs = next(c for c in node["children"] if c.get("id") == "tabs")
+        parent["children"][parent["children"].index(node)] = dict(tabs, size=node.get("size", {"px": 42}))
+    panel = herdr_find(tree, "orc-skills-panel")
+    if panel:
+        panel[1]["children"].remove(panel[0])
+
+
+def herdr_write(path, text):
+    tmp = path.with_name(path.name + ".orc-tmp")
+    tmp.write_text(text)
+    tmp.replace(path)
+
+
+def herdr_mod_files():
+    """The mod as built in dist: the sources, with config.js pointing at this
+    clone. main.js goes last because changing it reloads the mod. The whole
+    folder is linked, not each file: Herdr refuses a module whose real path is
+    outside the mod's folder."""
+    src = ROOT / "herdr-app/mods" / HERDR_MOD
+    files = {"config.js": "// Generated by herdr-orchestrators install.py; re-run it after moving the clone.\n"
+                          f"export const ORC = {json.dumps(str(ROOT / 'shared/bin/orc.py'))};\n"
+                          f"export const PYTHON = {json.dumps(sys.executable)};\n",
+             HERDR_MARKER: "Written by herdr-orchestrators install.py --herdr-app.\n"}
+    for name in ("skills.js", "icon.svg", "mod.json", "main.js"):
+        files[name] = (src / name).read_text()
+    return files
+
+
+def install_herdr_app(dry, force, manifest):
+    hp = herdr_home()
+    key = f"herdr-app|{hp}"
+    if not (hp / "layouts").is_dir():
+        print(f"[herdr-app] skipped: no Herdr app home at {hp} (open Herdr once, or set HERDR_APP_HOME)")
+        return True
+    dst = hp / "mods" / HERDR_MOD
+    built = dist_path(dst)
+    mine = (ours(dst) if dst.is_symlink() else (dst / HERDR_MARKER).exists())
+    if present(dst) and not mine and not force:
+        print(f"[herdr-app] not installed: {dst} exists and was not written by install.py (pass --force)")
+        return False
+    entry = manifest.get(key, {})
+    shown = herdr_json(hp / "shared.json", {}).get("layout") or "main"
+    shipped = {k.split(":", 1)[1] for k in herdr_json(hp / "installed.json", {}) if k.startswith("layout:")}
+    target = entry.get("layout")
+    if not target or not (hp / "layouts" / f"{target}.json").exists():
+        own = shown not in shipped and (hp / "layouts" / f"{shown}.json").exists()
+        target = shown if own else HERDR_LAYOUT
+    layout_path = hp / "layouts" / f"{target}.json"
+    create = not layout_path.exists()
+    if not create and not herdr_patch(herdr_json(layout_path, {})):
+        print(f"[herdr-app] not installed: layout {target} has no `tabs` block or `work-body` row "
+              f"to put the Skills panel beside")
+        return False
+    files = herdr_mod_files()
+    changed = [n for n in files if not (built / n).is_file() or (built / n).read_text() != files[n]]
+    relink = not linked(dst, built)
+    if dry:
+        print(f"[herdr-app] would write {len(changed)} of {len(files)} files under {built}"
+              + (f" and link {dst} to it" if relink else "") + "; "
+              + (f"would clone layout main as {target} and switch to it" if create else f"would add the panel to layout {target}"))
+        return True
+    built.mkdir(parents=True, exist_ok=True)
+    for name in changed:
+        (built / name).write_text(files[name])
+    if relink:
+        if dst.is_dir() and not dst.is_symlink():
+            if mine:  # a copy from before installs were links
+                shutil.rmtree(dst)
+            else:  # --force: keep theirs outside mods/, where Herdr would load it
+                aside = hp / f"{HERDR_MOD}.before-orc"
+                shutil.rmtree(aside, ignore_errors=True)
+                dst.rename(aside)
+                print(f"[herdr-app] moved the existing {dst} to {aside}")
+        link(dst, built)
+    note = ""
+    if create:
+        r = herdr_app("do", "layout.clone", json.dumps({"name": "main", "as": target}))
+        if not (r and r.returncode == 0 and layout_path.exists()):
+            # Herdr is not running: copy the shipped file; it is picked with ctrl-shift-l.
+            herdr_write(layout_path, (hp / "layouts/main.json").read_text())
+            note = f"; Herdr is not running: pick layout {target} with ctrl-shift-l"
+    tree = herdr_json(layout_path, None)
+    before = json.dumps(tree)
+    if tree is None or not herdr_patch(tree):
+        print(f"[herdr-app] mod written, but layout {target} could not be patched")
+        return False
+    if json.dumps(tree) != before:  # a rerun leaves the layout file alone
+        herdr_write(layout_path, json.dumps(tree, indent=2) + "\n")
+    check = herdr_app("check", str(dst))
+    if check is not None and check.returncode != 0:
+        print(f"[herdr-app] herdr-app check failed:\n{(check.stdout + check.stderr).strip()}")
+        return False
+    print(f"[herdr-app] wrote {len(changed)} of {len(files)} files under {built}"
+          + (f", linked {dst} to it" if relink else "") + f"; Skills panel in layout {target}"
+          + (" (cloned from main)" if create else "") + note
+          + ("; herdr-app check passed" if check is not None else ""))
+    manifest[key] = {"clone": str(ROOT), "agents": [], "files": [str(dst)],
+                     "layout": target, "created_layout": entry.get("created_layout", False) or create,
+                     "previous_layout": entry.get("previous_layout") or shown,
+                     "installed": datetime.datetime.now().isoformat(timespec="seconds")}
+    return True
+
+
+def uninstall_herdr_app(dry, manifest):
+    hp = herdr_home()
+    key = f"herdr-app|{hp}"
+    entry = manifest.get(key)
+    if not entry:
+        print(f"[herdr-app] nothing recorded for {hp}")
+        return
+    layout_path = hp / "layouts" / f"{entry['layout']}.json"
+    dst = hp / "mods" / HERDR_MOD
+    if dry:
+        print(f"[herdr-app] would remove {dst} and "
+              + (f"layout {entry['layout']}" if entry.get("created_layout") else f"the panel from layout {entry['layout']}"))
+        return
+    if layout_path.exists():
+        if entry.get("created_layout"):
+            if herdr_json(hp / "shared.json", {}).get("layout") == entry["layout"]:
+                herdr_app("do", "layout.switch", json.dumps({"name": entry.get("previous_layout") or "main"}))
+            layout_path.unlink()
+        else:
+            tree = herdr_json(layout_path, None)
+            if tree is not None:
+                herdr_unpatch(tree)
+                herdr_write(layout_path, json.dumps(tree, indent=2) + "\n")
+    if dst.is_symlink():
+        if ours(dst):
+            dst.unlink()
+    elif (dst / HERDR_MARKER).exists():
+        shutil.rmtree(dst)  # a copy from before installs were links
+    built = dist_path(dst)
+    if (built / HERDR_MARKER).exists():
+        shutil.rmtree(built)
+        prune(built.parent, dist_root())
+    print(f"[herdr-app] removed {dst} and "
+          + (f"layout {entry['layout']}" if entry.get("created_layout") else f"the panel from layout {entry['layout']}"))
+    manifest.pop(key)
+
+
+def link_health(paths):
+    """'links=N', plus the broken links and the copies left from before links."""
+    paths = [Path(p) for p in paths]
+    broken = sum(p.is_symlink() and not p.exists() for p in paths)
+    copies = sum(not p.is_symlink() and p.exists() for p in paths)
+    return (f"links={sum(p.is_symlink() for p in paths)}"
+            + (f"  BROKEN={broken} (re-run install.py)" if broken else "")
+            + (f"  copies={copies} (re-run install.py to link them)" if copies else ""))
 
 
 def status(manifest):
     if not manifest:
         print("no installs recorded on this machine")
     for key, e in sorted(manifest.items()):
+        if key.startswith("herdr-app|"):
+            print(f"herdr-app {key.split('|', 1)[1]}  layout={e['layout']}  {link_health(e['files'])}  "
+                  f"from {e['clone']}  ({e['installed']})")
+            continue
         cli, scope, base = key.split("|", 2)
-        print(f"{cli:9} {scope:8} {base}  agents={','.join(e['agents'])}  files={len(e['files'])}  "
+        print(f"{cli:9} {scope:8} {base}  agents={','.join(e['agents'])}  {link_health(e['files'])}  "
               f"from {e['clone']}  ({e['installed']})")
 
 
@@ -600,11 +895,22 @@ def main():
     ap.add_argument("--no-mods", action="store_true", help="skip the Claude Code-only plugins in mods/")
     ap.add_argument("--uninstall", action="store_true")
     ap.add_argument("--status", action="store_true")
+    ap.add_argument("--herdr-app", action="store_true",
+                    help="install (or with --uninstall remove) only the Herdr desktop Skills panel")
     a = ap.parse_args()
 
     manifest = load_manifest()
     if a.status:
         return status(manifest)
+    if a.herdr_app:
+        ok = True
+        if a.uninstall:
+            uninstall_herdr_app(a.dry_run, manifest)
+        else:
+            ok = install_herdr_app(a.dry_run, a.force, manifest)
+        if not a.dry_run:
+            save_manifest(manifest)
+        return 0 if ok else 1
     if a.cli:
         clis = [c.strip() for c in a.cli.split(",") if c.strip()]
         unknown = [c for c in clis if c not in CLIS]

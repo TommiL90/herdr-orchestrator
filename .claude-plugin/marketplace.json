@@ -6,6 +6,16 @@
       "name": "orc-cache",
       "source": "./mods/orc-cache",
       "description": "Claude Code only: prompt-cache meter and wait guard for hcorc/herdorc sessions."
+    },
+    {
+      "name": "orc-graph",
+      "source": "./mods/orc-graph",
+      "description": "Claude Code only: a live graph of the orchestrator's role panes and subagents, with the work passing between them."
+    },
+    {
+      "name": "orc-context",
+      "source": "./mods/orc-context",
+      "description": "Claude Code only: the context each orchestrator agent has used; Claude Code role panes report their own."
     }
   ]
 }

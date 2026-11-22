@@ -1,4 +1,4 @@
-<!-- Shared by every orchestrator; inserted between the ODD core and the multiplexer layer by scripts/build-agents.py. -->
+<!-- Shared by every orchestrator; inserted between the ODD core and the multiplexer layer by install.py. -->
 # Orchestrator skills
 
 These skills were ported for this orchestrator (from tomidev-shell, see
@@ -11,6 +11,29 @@ These skills were ported for this orchestrator (from tomidev-shell, see
 - `tlc-spec-lean` belongs to the Checks-only and Full Lean lanes only; Direct
   work never loads it. `consensus` runs where the core's lane rules call for
   judges.
+
+## Which skill wins
+
+The skills above are this orchestrator's fallback copies. The project comes
+first, as the Skill Registry Protocol says:
+
+1. Same name: a project copy wins over a user copy, and both win over the
+   copy in `{{SKILLS_ROOT}}`.
+2. Same purpose under another name (say a project `code-review` and
+   `requesting-code-review`): use the project's skill.
+3. Hand the winner's exact path to the role, and add this line to the
+   handoff: `Use these skills instead of any skill your role file names for
+   the same purpose.` A role file may name a fallback skill
+   (`requesting-code-review`, `consensus`); the handoff overrides it.
+4. The protocols the core requires still run (`consensus` for the judges,
+   `tlc-spec-lean` in the Lean lanes), unless the project has its own
+   workflow for the same purpose; then that workflow runs them.
+
+`{{ORC}} skills` lists the same-name conflicts in the current project: the
+copy that wins and the copies it shadows. Run it at session start. If it
+reports any, tell the user once, in a short table, before the first task
+that would load one of those skills. Same-purpose conflicts under different
+names are yours to spot: when you choose one, say which one and why.
 
 # Context checkpoints
 

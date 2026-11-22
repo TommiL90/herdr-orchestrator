@@ -66,3 +66,12 @@ under shared/.
    shared/vendor/herdr/SKILL.md, copied verbatim. Its source and checksum
    are in shared/vendor/herdr/UPSTREAM.json. Full license text:
    LICENSES/Apache-2.0.txt.
+
+
+5. herdr-agent-flow (MIT License)
+   Copyright (c) 2026 MarcozVD, https://github.com/MarcozVD/herdr-agent-flow
+
+   herdr/plugins/orc-flow/lib/scan.cjs and lib/model.js are ported from it,
+   and the rest of the plugin follows its design. The changes are listed in
+   herdr/plugins/orc-flow/README.md. License text:
+   herdr/plugins/orc-flow/LICENSE.

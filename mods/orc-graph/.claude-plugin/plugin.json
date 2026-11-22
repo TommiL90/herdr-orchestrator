@@ -1,0 +1,6 @@
+{
+  "name": "orc-graph",
+  "version": "0.1.0",
+  "description": "Claude Code only: a live graph of the hcorc/herdorc orchestrator's role panes and subagents, with the work passing between them.",
+  "types": "./types/index.d.ts"
+}

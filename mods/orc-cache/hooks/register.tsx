@@ -22,7 +22,13 @@ const TOAST_MIN_TOKENS = 20_000
 const WARN_LEFT_MS = 60_000
 
 /** What register's options settle to, shared with the helpers below. */
-const cfg: { opt: Options; checkpointAt: number; phasePath?: string } = { opt: {}, checkpointAt: 150_000 }
+const cfg: {
+  opt: Options
+  checkpointAt: number
+  phasePath?: string
+  timer?: { cancel: () => void }
+  ticks: number
+} = { opt: {}, checkpointAt: 150_000, ticks: 0 }
 
 async function isShown($: EngineInterface): Promise<boolean> {
 return (await read($, agentAtom)) !== null || cfg.opt.everywhere === true
@@ -75,38 +81,57 @@ async function record($: EngineInterface, cur: Sample): Promise<void> {
   }
 }
 
+/** Starts the meter for an orchestrator session (or every session with `everywhere`). */
+async function activate($: EngineInterface, agent: string | null): Promise<void> {
+  if (agent && (await read($, agentAtom)) !== agent) await update($, agentAtom, () => agent)
+  cfg.phasePath = agent
+    ? phaseFile((await $.env.get('HOME')) ?? '', agent, {
+        hcTerminal: await $.env.get('HC_TERMINAL_ID'),
+        herdrSession: await $.env.get('HERDR_SESSION'),
+        herdrPane: await $.env.get('HERDR_PANE_ID'),
+      })
+    : undefined
+  cfg.timer?.cancel()
+  cfg.timer = undefined
+  if (agent || cfg.opt.everywhere === true) {
+    await refreshPolicy($)
+    await readPhase($)
+    cfg.timer = $.clock.every(1000, () => {
+      cfg.ticks += 1
+      void $.clock.now().then(t => update($, now, () => t))
+      if (cfg.ticks % 3 === 0) void readPhase($)
+    })
+  }
+}
+
+/** `claude --agent hcorc` names the agent on classic hook events too; a hot reload sees no session start. */
+async function fromClassic($: EngineInterface, e: { agent_type?: string; agent_id?: string }): Promise<void> {
+  if (e.agent_id !== undefined || (await read($, agentAtom)) !== null) return
+  const agent = agentOf(e.agent_type)
+  if (agent) await activate($, agent)
+}
+
 export const register: Register = (on, options) => {
   const opt = (options ?? {}) as Options
   cfg.opt = opt
   cfg.checkpointAt = typeof opt.checkpointAtTokens === 'number' && opt.checkpointAtTokens > 0
     ? opt.checkpointAtTokens : 150_000
   const checkpointAt = cfg.checkpointAt
-  let timer: { cancel: () => void } | undefined
-  let ticks = 0
 
   on('session.start', async ($, e, next) => {
-    const agent = agentOf(await $.env.get('CLAUDE_CODE_AGENT'))
-    await update($, agentAtom, () => agent)
-    cfg.phasePath = agent
-      ? phaseFile((await $.env.get('HOME')) ?? '', agent, {
-          hcTerminal: await $.env.get('HC_TERMINAL_ID'),
-          herdrSession: await $.env.get('HERDR_SESSION'),
-          herdrPane: await $.env.get('HERDR_PANE_ID'),
-        })
-      : undefined
-    timer?.cancel()
-    timer = undefined
-    if (agent || opt.everywhere === true) {
-      await refreshPolicy($)
-      await readPhase($)
-      timer = $.clock.every(1000, () => {
-        ticks += 1
-        void $.clock.now().then(t => update($, now, () => t))
-        if (ticks % 3 === 0) void readPhase($)
-      })
-    }
+    const agent = agentOf(await $.env.get('CLAUDE_CODE_AGENT')) ?? (await read($, agentAtom))
+    await activate($, agent)
     return next(e)
   })
+
+  on('classic.SessionStart', async ($, e, next) => {
+    await fromClassic($, e)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    await fromClassic($, e)
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {

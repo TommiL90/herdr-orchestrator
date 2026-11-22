@@ -1,0 +1,36 @@
+--- a/mods/agent-flow/scan.cjs
++++ b/mods/agent-flow/scan.cjs
+@@ -18,7 +18,7 @@
+ const MAX_SUBS = 12;
+ const MAX_OPEN = 64; // tool calls still waiting for a result; interrupted ones never get one
+ const QUIET_MS = 3 * 60 * 1000; // an unfinished subagent silent this long is reported stale
+-const CACHE_VERSION = 2;
++const CACHE_VERSION = 3; // 3: orc.py handoffs count as sends, so transcripts are read again
+ const MAX_OUT = 6 * 1024 * 1024; // Herdr's exec keeps 8 MiB of output and drops the rest
+ const warnings = new Set(); // a private format that changed, named by what's missing
+ const CACHE = process.env.AGENT_FLOW_CACHE || path.join(os.tmpdir(), "herdr-agent-flow", "scan-cache.json");
+@@ -121,13 +121,21 @@
+   return "";
+ }
+ 
+-// Who a tool call is talking to: `hc send <target>` from a shell, or Claude Code's
+-// SendMessage. Only the target leaves here, never the message.
++// orc.py (herdr-orchestrators) opens a role pane and hands it its task in one call:
++// `orc.py [--as <agent>] ensure <role> [--name <pane>] ... --handoff <file>`. The pane is
++// named after `--name`, else the role. Without `--handoff` it only opens the pane.
++const ORC_ENSURE = /(?:^|[\s;&|/\\"'])orc(?:\.py)?["']?\s+(?:--as[\s=]\S+\s+)?ensure\s+["']?([\w.-]+)([^;&|\n]*)/i;
++
++// Who a tool call is talking to: `hc send <target>` from a shell, an orc.py handoff, or
++// Claude Code's SendMessage. Only the target leaves here, never the message.
+ function target(name, input = {}) {
+   if (name === "SendMessage" && input.to) return String(input.to);
+   if (typeof input.command !== "string") return null;
+   const hit = /(?:^|[\s;&|/\\"'])hc(?:\.exe)?["']?\s+send\s+(?:--?[a-z-]+\s+)*["']?([\w:./-]+)/i.exec(input.command);
+-  return hit ? hit[1] : null;
++  if (hit) return hit[1];
++  const orc = ORC_ENSURE.exec(input.command);
++  if (!orc || !/\s--handoff[\s=]/.test(orc[2])) return null;
++  return /\s--name[\s=]["']?([\w.-]+)/.exec(orc[2])?.[1] ?? orc[1];
+ }
+ 
+ // Messages arrive tagged <hc from="t7 review">. Only the address leaves here.

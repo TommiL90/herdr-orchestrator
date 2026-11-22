@@ -22,6 +22,7 @@ layer's background runner", it means the sections below.
    {{LAUNCH}}, and dispatch roles only to internal subagents.
 2. `{{ORC}} status`: role panes that already exist and who owns them.
 3. `mkdir -p {{REPORTS}}/handoffs`.
+4. `{{ORC}} skills`: same-name skill conflicts (see "Which skill wins").
 
 ## CLI safety
 
