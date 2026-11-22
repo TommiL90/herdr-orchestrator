@@ -35,6 +35,8 @@ Where each CLI gets what (user | project):
   cursor    ~/.cursor | .cursor             orchestrators as skills (/hcorc), roles as subagents
 """
 import argparse
+import contextlib
+import copy
 import datetime
 import json
 import os
@@ -44,6 +46,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows: no lock, the merge still keeps other entries
+    fcntl = None
 
 ROOT = Path(__file__).resolve().parent
 ORC = ROOT / "shared/bin/orc.py"
@@ -151,12 +158,19 @@ def home():
     return Path.home()
 
 
+def env_path(var, default):
+    """A folder from the environment, with ~ expanded and made absolute (a relative
+    path would make every link point somewhere else), else the default."""
+    value = os.environ.get(var)
+    return Path(os.path.abspath(os.path.expanduser(value))) if value else Path(default)
+
+
 def state_dir():
     return home() / ".local/state/orc"
 
 
 def codex_home():
-    return Path(os.environ.get("CODEX_HOME") or home() / ".codex")
+    return env_path("CODEX_HOME", home() / ".codex")
 
 
 def read(rel):
@@ -223,7 +237,7 @@ def toml_file(fields):
 
 
 def dist_root():
-    return Path(os.environ.get("ORC_DIST") or ROOT / "dist")
+    return env_path("ORC_DIST", ROOT / "dist")
 
 
 def dist_path(target):
@@ -256,7 +270,7 @@ def link(path, src):
     tmp = path.with_name(path.name + ".orc-tmp")
     if present(tmp):
         tmp.unlink()
-    os.symlink(src, tmp)
+    os.symlink(os.path.abspath(src), tmp)
     os.replace(tmp, path)
 
 
@@ -325,16 +339,14 @@ def glossary(cli):
              "None run for you here. Where a rule would need one, the layer says what to do instead.")
     return (f"# Tool vocabulary ({label})\n\n"
             f"This prompt, its commands and the docs it points to are written for any CLI. They say "
-            f"\"ask tool\", \"subagent tool\", \"shell tool\" and \"todo tool\"; a few ported docs name "
-            f"Claude Code tools instead. In {label}, read both as follows:\n\n"
-            f"- Ask tool (`AskUserQuestion`): {v['ask']}.\n"
-            f"- Subagent tool (the Agent tool with `subagent_type: <role>`; \"the internal Claude Code "
-            f"subagent\" means the internal subagent of that name): {v['subagent']}.\n"
-            f"- Background subagents (the Agent tool's `run_in_background`): {v['background']}.\n"
-            f"- Shell tool (the Bash tool, its `timeout` and `run_in_background`): {v['shell']}.\n"
-            f"- Todo tool (TodoWrite): {v['todo']}.\n"
-            f"- Skills (the Skill tool): {v['skills']}.\n"
-            f"- MCP tools (`mcp__<server>__<tool>`): the same tool when that server is configured here "
+            f"\"ask tool\", \"subagent tool\", \"shell tool\" and \"todo tool\". In {label} they mean:\n\n"
+            f"- Ask tool: {v['ask']}.\n"
+            f"- Subagent tool (\"the internal subagent `<role>`\" is the subagent of that name): {v['subagent']}.\n"
+            f"- The subagent tool's background option: {v['background']}.\n"
+            f"- Shell tool, its timeout and background options: {v['shell']}.\n"
+            f"- Todo tool: {v['todo']}.\n"
+            f"- Skills: {v['skills']}.\n"
+            f"- Engram's `mem_*` and other MCP tools: the same tool when that server is configured here "
             f"(its name may differ); otherwise take the text's path for when it is unavailable.\n"
             f"- Hooks: {hooks}\n\n")
 
@@ -378,7 +390,7 @@ def base_dir(cli, scope, project):
                "cursor": ".cursor"}[cli]
         return project / sub
     return {"claude": home() / ".claude",
-            "opencode": Path(os.environ.get("XDG_CONFIG_HOME") or home() / ".config") / "opencode",
+            "opencode": env_path("XDG_CONFIG_HOME", home() / ".config") / "opencode",
             "agy": home() / ".gemini/config", "codex": codex_home(), "cursor": home() / ".cursor"}[cli]
 
 
@@ -464,24 +476,52 @@ def hook_entries(scope, project):
             "PostToolUse": {"matcher": "*", "hooks": [{"type": "command", "command": post}]}}
 
 
-def is_our_hook(event, entry):
-    suffix = HOOK_SUFFIXES[event]
-    return any((h.get("command") or "").replace('"', "").replace("'", "").strip().endswith(suffix)
-               for h in entry.get("hooks", []))
+def is_our_command(event, hook):
+    return (hook.get("command") or "").replace('"', "").replace("'", "").strip().endswith(HOOK_SUFFIXES[event])
+
+
+class SettingsError(Exception):
+    pass
+
+
+def load_settings(settings_path):
+    """settings.json as a dict ({} when absent). SettingsError when it cannot be merged."""
+    if not settings_path.exists():
+        return {}
+    try:
+        settings = json.loads(settings_path.read_text())
+    except json.JSONDecodeError as e:
+        raise SettingsError(f"{settings_path} is not valid JSON ({e}); fix it first")
+    if not isinstance(settings, dict) or not isinstance(settings.get("hooks", {}), dict):
+        raise SettingsError(f"{settings_path} does not hold a JSON object with a `hooks` object; fix it first")
+    for event in HOOK_SUFFIXES:  # the events merge_hooks rewrites: lists of {matcher, hooks: [...]}
+        entries = settings["hooks"].get(event, []) if "hooks" in settings else []
+        if not isinstance(entries, list) or not all(
+                isinstance(e, dict) and isinstance(e.get("hooks", []), list)
+                and all(isinstance(h, dict) and isinstance(h.get("command", ""), str) for h in e.get("hooks", []))
+                for e in entries):
+            raise SettingsError(f"{settings_path}: `hooks.{event}` is not a list of hook entries "
+                                "(each with a text `command`); fix it first")
+    return settings
 
 
 def merge_hooks(settings_path, entries, dry):
-    """Add (entries) or remove (entries=None) our hooks; every other setting is kept."""
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text())
-        except json.JSONDecodeError as e:
-            raise SystemExit(f"{settings_path} is not valid JSON ({e}); fix it first, nothing was changed")
-    else:
-        settings = {}
+    """Add (entries) or remove (entries=None) our hooks; every other setting is kept,
+    and so are the user's hooks that share an entry (a matcher) with ours."""
+    write_settings(settings_path, merged_settings(settings_path, entries), dry)
+
+
+def merged_settings(settings_path, entries):
+    """settings.json with our hooks added or removed, computed without writing:
+    SettingsError here means nothing was touched."""
+    settings = load_settings(settings_path)
     hooks = settings.get("hooks", {})
     for event in HOOK_SUFFIXES:
-        kept = [e for e in hooks.get(event, []) if not is_our_hook(event, e)]
+        kept = []
+        for e in hooks.get(event, []):
+            theirs = [h for h in e.get("hooks", []) if not is_our_command(event, h)]
+            if theirs:
+                kept.append(dict(e, hooks=theirs) if len(theirs) != len(e.get("hooks", [])) else e)
         if entries:
             kept.append(entries[event])
         if kept:
@@ -492,6 +532,10 @@ def merge_hooks(settings_path, entries, dry):
         settings["hooks"] = hooks
     else:
         settings.pop("hooks", None)
+    return settings
+
+
+def write_settings(settings_path, settings, dry):
     if dry:
         return
     backup = settings_path.with_name(settings_path.name + ".orc-backup")
@@ -524,29 +568,44 @@ def claude_plugin(args, cwd, dry):
     return True
 
 
-def install_mods(scope, project, dry):
-    """Claude Code-only extras; the orchestrators work without them, so failures only warn."""
+def install_mods(scope, project, dry, previous=()):
+    """Claude Code-only extras; the orchestrators work without them, so failures only warn.
+    previous: the refs recorded last time; those no longer produced (a renamed
+    marketplace or a removed mod) are uninstalled."""
     found = mods()
     if not found or not shutil.which("claude"):
-        return []
+        return list(previous)
     market, plugins = found
     where = ["--scope", "project" if scope == "project" else "user"]
     cwd = project if scope == "project" else ROOT
+    gone = [r for r in previous if r not in {f"{p}@{market}" for p in plugins}]
+    for ref in gone:
+        claude_plugin(["uninstall", ref, *where], cwd, dry)
+    for old_market in sorted({r.split("@", 1)[1] for r in gone if "@" in r} - {market}):
+        claude_plugin(["marketplace", "remove", old_market, *where], cwd, dry)
     claude_plugin(["marketplace", "add", str(ROOT), *where], cwd, dry)
-    done = [p for p in plugins if claude_plugin(["install", f"{p}@{market}", *where], cwd, dry)]
+    claude_plugin(["marketplace", "update", market], cwd, dry)  # a rerun after git pull
+    done = []
+    for p in plugins:
+        if claude_plugin(["install", f"{p}@{market}", *where], cwd, dry):
+            claude_plugin(["update", f"{p}@{market}", *where], cwd, dry)
+            done.append(p)
     if done and not dry:
         print(f"[claude] mods installed as plugins: {', '.join(done)} (marketplace {market})")
     return [f"{p}@{market}" for p in done]
 
 
 def uninstall_mods(entry, scope, project, dry, others_use_market):
+    if entry.get("mods") and not shutil.which("claude"):
+        print(f"  claude is not on PATH: uninstall these plugins by hand: {', '.join(entry['mods'])}")
+        return
     where = ["--scope", "project" if scope == "project" else "user"]
     cwd = project if scope == "project" else ROOT
     for ref in entry.get("mods", []):
         claude_plugin(["uninstall", ref, *where], cwd, dry)
-    found = mods()
-    if entry.get("mods") and found and not others_use_market:
-        claude_plugin(["marketplace", "remove", found[0], *where], cwd, dry)
+    if not others_use_market:  # the marketplaces the recorded refs came from
+        for market in sorted({r.split("@", 1)[1] for r in entry.get("mods", []) if "@" in r}):
+            claude_plugin(["marketplace", "remove", market, *where], cwd, dry)
 
 
 # --------------------------------------------------------------- manifest
@@ -554,16 +613,70 @@ def manifest_path():
     return state_dir() / "installs.json"
 
 
-def load_manifest():
+_manifest_base = {}  # the manifest as this run read it: save_manifest writes only what changed since
+
+
+def read_manifest():
     try:
-        return json.loads(manifest_path().read_text())
+        data = json.loads(manifest_path().read_text())
     except (OSError, json.JSONDecodeError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_manifest():
+    global _manifest_base
+    data = read_manifest()
+    _manifest_base = copy.deepcopy(data)
+    return data
+
+
+_lock_depth = 0
+
+
+@contextlib.contextmanager
+def manifest_lock():
+    """Holds the manifest lock; nested uses in one process share it. extras.py holds it
+    from load to save, since all its mods share one manifest entry."""
+    global _lock_depth
+    if _lock_depth:
+        _lock_depth += 1
+        try:
+            yield
+        finally:
+            _lock_depth -= 1
+        return
+    path = manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "a") as lock:
+        if fcntl:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        _lock_depth = 1
+        try:
+            yield
+        finally:
+            _lock_depth = 0
 
 
 def save_manifest(data):
-    manifest_path().parent.mkdir(parents=True, exist_ok=True)
-    manifest_path().write_text(json.dumps(data, indent=1) + "\n")
+    """Write the entries this run added, changed or removed onto the manifest as it is
+    now, under a lock: another install (an installer in another terminal, extras.py)
+    may have saved its own entries since this one loaded."""
+    global _manifest_base
+    path = manifest_path()
+    with manifest_lock():
+        current = read_manifest()
+        for key in set(_manifest_base) | set(data):
+            if key not in data:
+                current.pop(key, None)
+            elif data[key] != _manifest_base.get(key):
+                current[key] = data[key]
+        tmp = path.with_name(path.name + ".orc-tmp")
+        tmp.write_text(json.dumps(current, indent=1) + "\n")
+        tmp.replace(path)
+    _manifest_base = copy.deepcopy(current)
+    data.clear()
+    data.update(copy.deepcopy(current))
 
 
 def used_elsewhere(manifest, key):
@@ -621,14 +734,28 @@ def install(cli, scope, project, agents, dry, force, manifest, with_mods=True):
         for p in conflicts:
             print(f"  {p}")
         return False
+    settings = base / "settings.json" if "hooks" in CLIS[cli]["caps"] else None
+    merged = None
+    if settings:
+        try:  # before anything is written: a settings.json we cannot merge stops this CLI untouched
+            merged = merged_settings(settings, hook_entries(scope, project))
+        except (SettingsError, AttributeError, TypeError) as e:
+            print(f"[{cli}] not installed: {settings}: {e}; nothing was changed")
+            return False
+    for shadow in shadows:  # --force: a flat agents/<name>.md would win over our folder
+        if present(shadow) and not ours(shadow) and not dry:
+            aside = shadow.with_name(shadow.name + ".before-orc")
+            shadow.rename(aside)
+            print(f"[{cli}] moved {shadow} to {aside}: it would shadow the installed agent")
     old = set(manifest.get(key, {}).get("files", []))
     stale = remove_files(sorted(old - {str(p) for p in files}), used_elsewhere(manifest, key), dry)
     changed = write_links({p: (dist_path(p), text) for p, text in files.items()}, dry)
-    settings = None
-    if "hooks" in CLIS[cli]["caps"]:
-        settings = base / "settings.json"
-        merge_hooks(settings, hook_entries(scope, project), dry)
-    installed_mods = install_mods(scope, project, dry) if cli == "claude" and with_mods else []
+    if settings:
+        write_settings(settings, merged, dry)
+    if cli == "claude" and with_mods:
+        installed_mods = install_mods(scope, project, dry, manifest.get(key, {}).get("mods", []))
+    else:  # --no-mods leaves installed mods alone, and keeps them recorded for --uninstall
+        installed_mods = manifest.get(key, {}).get("mods", [])
     verb = "would update" if dry else "updated"
     print(f"[{cli}] {verb} {len(changed)} of {len(files)} links under {base}"
           + (f" (+ codex profiles in {codex_home()})" if cli == "codex" else "")
@@ -651,14 +778,24 @@ def uninstall(cli, scope, project, dry, manifest):
         print(f"[{cli}] nothing recorded for {scope} scope at {base}")
         return
     removed = remove_files(entry.get("files", []), used_elsewhere(manifest, key), dry)
+    hooks_left = None
     if entry.get("settings"):
-        merge_hooks(Path(entry["settings"]), None, dry)
-    uninstall_mods(entry, scope, project, dry,
-                   any(e.get("mods") for k, e in manifest.items() if k != key))
+        try:
+            merge_hooks(Path(entry["settings"]), None, dry)
+        except SettingsError as e:
+            hooks_left = e
+    same_scope = [e for k, e in manifest.items() if k != key and k.split("|")[1:2] == [scope]]
+    uninstall_mods(entry, scope, project, dry, any(e.get("mods") for e in same_scope))
     print(f"[{cli}] {'would remove' if dry else 'removed'} {len(removed)} links"
-          + ("; hooks removed from " + entry["settings"] if entry.get("settings") else ""))
+          + ("; hooks removed from " + entry["settings"] if entry.get("settings") and not hooks_left else ""))
+    if hooks_left:  # keep the record, so a later --uninstall still finds the hooks to remove
+        print(f"[{cli}] hooks left in place: {hooks_left}; fix it and run --uninstall again")
     if not dry:
-        manifest.pop(key)
+        if hooks_left:
+            manifest[key] = dict(entry, files=[], mods=[])
+        else:
+            manifest.pop(key)
+    return not hooks_left
 
 
 # ------------------------------------------------------------------ herdr-app
@@ -671,7 +808,7 @@ HERDR_MARKER = ".orc-generated"  # hidden: Herdr does not reload on it
 
 
 def herdr_home():
-    return Path(os.environ.get("HERDR_APP_HOME") or home() / ".config/herdr-app")
+    return env_path("HERDR_APP_HOME", home() / ".config/herdr-app")
 
 
 def herdr_app(*args):
@@ -702,6 +839,11 @@ def herdr_find(node, node_id, parent=None):
     return None
 
 
+def herdr_toggle():
+    return {"id": "orc-skills-toggle", "type": "block", "size": {"px": 104}, "window_drag": True,
+            "content": {"mod": HERDR_MOD, "props": {"role": "toggle"}}}
+
+
 def herdr_patch(tree):
     """Add the button and the panel column once. False if the layout has no
     `tabs` block or `work-body` row to put them beside."""
@@ -709,12 +851,14 @@ def herdr_patch(tree):
     if not tabs or not body or tabs[1] is None:
         return False
     node, parent = tabs
-    if parent.get("id") != "orc-skills-bar":
+    if parent.get("id") == "orc-skills-bar":  # a bar from an earlier install: put our button back if it went
+        if not any(c.get("id") == "orc-skills-toggle" for c in parent.get("children", [])):
+            parent["children"].append(herdr_toggle())
+    else:
         parent["children"][parent["children"].index(node)] = {
             "id": "orc-skills-bar", "type": "row", "size": node.get("size", {"px": 42}), "resizable": False,
             "children": [dict(node, size={"weight": 1}),
-                         {"id": "orc-skills-toggle", "type": "block", "size": {"px": 104}, "window_drag": True,
-                          "content": {"mod": HERDR_MOD, "props": {"role": "toggle"}}}]}
+                         herdr_toggle()]}
     if not herdr_find(tree, "orc-skills-panel"):
         body[0]["children"].append({
             "id": "orc-skills-panel", "type": "column", "hidden": True, "size": {"px": 360}, "min": 300, "max": 720,
@@ -726,8 +870,12 @@ def herdr_unpatch(tree):
     bar = herdr_find(tree, "orc-skills-bar")
     if bar:
         node, parent = bar
-        tabs = next(c for c in node["children"] if c.get("id") == "tabs")
-        parent["children"][parent["children"].index(node)] = dict(tabs, size=node.get("size", {"px": 42}))
+        rest = [c for c in node.get("children", []) if c.get("id") != "orc-skills-toggle"]
+        tabs = next((c for c in rest if c.get("id") == "tabs"), None)
+        if tabs and len(rest) == 1:  # only what we wrapped: put the tab bar back
+            parent["children"][parent["children"].index(node)] = dict(tabs, size=node.get("size", {"px": 42}))
+        else:  # something else joined the bar since: only take our button out
+            node["children"] = rest
     panel = herdr_find(tree, "orc-skills-panel")
     if panel:
         panel[1]["children"].remove(panel[0])
@@ -739,6 +887,13 @@ def herdr_write(path, text):
     tmp.replace(path)
 
 
+def stable_python():
+    """python3 as PATH finds it (a version manager's shim stays valid across Python
+    upgrades), else this interpreter."""
+    found = shutil.which("python3")
+    return os.path.abspath(found) if found else sys.executable
+
+
 def herdr_mod_files():
     """The mod as built in dist: the sources, with config.js pointing at this
     clone. main.js goes last because changing it reloads the mod. The whole
@@ -747,7 +902,7 @@ def herdr_mod_files():
     src = ROOT / "herdr-app/mods" / HERDR_MOD
     files = {"config.js": "// Generated by herdr-orchestrators install.py; re-run it after moving the clone.\n"
                           f"export const ORC = {json.dumps(str(ROOT / 'shared/bin/orc.py'))};\n"
-                          f"export const PYTHON = {json.dumps(sys.executable)};\n",
+                          f"export const PYTHON = {json.dumps(stable_python())};\n",
              HERDR_MARKER: "Written by herdr-orchestrators install.py --herdr-app.\n"}
     for name in ("skills.js", "icon.svg", "mod.json", "main.js"):
         files[name] = (src / name).read_text()
@@ -775,6 +930,9 @@ def install_herdr_app(dry, force, manifest):
         target = shown if own else HERDR_LAYOUT
     layout_path = hp / "layouts" / f"{target}.json"
     create = not layout_path.exists()
+    if create and not (hp / "layouts/main.json").exists():
+        print(f"[herdr-app] not installed: no layout to start from ({hp / 'layouts/main.json'} is missing; open Herdr once)")
+        return False
     if not create and not herdr_patch(herdr_json(layout_path, {})):
         print(f"[herdr-app] not installed: layout {target} has no `tabs` block or `work-body` row "
               f"to put the Skills panel beside")
@@ -800,6 +958,12 @@ def install_herdr_app(dry, force, manifest):
                 dst.rename(aside)
                 print(f"[herdr-app] moved the existing {dst} to {aside}")
         link(dst, built)
+    # Recorded now, so --uninstall finds it even if a step below fails. created_layout
+    # stays true only for the layout this installer cloned, not one it found later.
+    manifest[key] = {"clone": str(ROOT), "agents": [], "files": [str(dst)], "layout": target,
+                     "created_layout": create or (entry.get("created_layout", False) and entry.get("layout") == target),
+                     "previous_layout": entry.get("previous_layout") or shown,
+                     "installed": datetime.datetime.now().isoformat(timespec="seconds")}
     note = ""
     if create:
         r = herdr_app("do", "layout.clone", json.dumps({"name": "main", "as": target}))
@@ -822,10 +986,6 @@ def install_herdr_app(dry, force, manifest):
           + (f", linked {dst} to it" if relink else "") + f"; Skills panel in layout {target}"
           + (" (cloned from main)" if create else "") + note
           + ("; herdr-app check passed" if check is not None else ""))
-    manifest[key] = {"clone": str(ROOT), "agents": [], "files": [str(dst)],
-                     "layout": target, "created_layout": entry.get("created_layout", False) or create,
-                     "previous_layout": entry.get("previous_layout") or shown,
-                     "installed": datetime.datetime.now().isoformat(timespec="seconds")}
     return True
 
 
@@ -874,7 +1034,7 @@ HERDR_PLUGIN = "orc-flow"
 
 
 def herdr_tui_config():
-    return Path(os.environ.get("XDG_CONFIG_HOME") or home() / ".config") / "herdr"
+    return env_path("XDG_CONFIG_HOME", home() / ".config") / "herdr"
 
 
 def herdr_tui(*args):
@@ -1017,23 +1177,32 @@ def main():
         unknown = [c for c in clis if c not in CLIS]
         if unknown:
             ap.error(f"unknown CLI {unknown}; choose from {', '.join(CLIS)}")
-    else:
-        clis = [c for c, meta in CLIS.items() if shutil.which(meta["bin"])]
-        if not clis:
-            ap.error("none of the supported CLIs is on PATH; name them with --cli")
     agents = [x.strip() for x in a.agents.split(",") if x.strip()]
     if not agents or any(x not in ORCHESTRATORS for x in agents):
         ap.error(f"--agents takes {', '.join(ORCHESTRATORS)}")
     project = a.project.expanduser().resolve()
     if a.scope == "project" and not project.is_dir():
         ap.error(f"{project} is not a directory")
+    if not a.cli and a.uninstall:  # what was installed here, whether or not its CLI is still on PATH
+        clis = [c for c in CLIS if f"{c}|{a.scope}|{base_dir(c, a.scope, project)}" in manifest]
+        if not clis:
+            print(f"nothing recorded for {a.scope} scope" + (f" at {project}" if a.scope == "project" else ""))
+            return 0
+    elif not a.cli:
+        clis = [c for c, meta in CLIS.items() if shutil.which(meta["bin"])]
+        if not clis:
+            ap.error("none of the supported CLIs is on PATH; name them with --cli")
 
     ok = True
     for cli in clis:
-        if a.uninstall:
-            uninstall(cli, a.scope, project, a.dry_run, manifest)
-        else:
-            ok = install(cli, a.scope, project, agents, a.dry_run, a.force, manifest, not a.no_mods) and ok
+        try:
+            if a.uninstall:
+                ok = uninstall(cli, a.scope, project, a.dry_run, manifest) is not False and ok
+            else:
+                ok = install(cli, a.scope, project, agents, a.dry_run, a.force, manifest, not a.no_mods) and ok
+        except Exception as e:  # noqa: BLE001  the others still install, and get recorded
+            print(f"[{cli}] failed: {e}")
+            ok = False
     if not a.dry_run:
         save_manifest(manifest)
     if not a.uninstall and not a.dry_run and ok:

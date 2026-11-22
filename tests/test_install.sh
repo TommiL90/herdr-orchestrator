@@ -41,11 +41,16 @@ check "opencode read-only role denies edit, worker does not" "grep -q 'effect: d
 check "opencode command runs under its agent" "grep -q '^agent: herdorc' $HOME/.config/opencode/commands/herdorc-panes.md"
 check "agy roles: subagent only, exact tools" "grep -q '^mainAgent: false' $HOME/.gemini/config/agents/review-risk/agent.md && grep -q 'run_command' $HOME/.gemini/config/agents/review-risk/agent.md && ! grep -q -E 'mcp__|Bash' $HOME/.gemini/config/agents/review-risk/agent.md"
 check "herdorc embeds the herdr skill" "grep -q 'The \`herdr\` skill follows' $HOME/.gemini/config/agents/herdorc/agent.md"
+# tomllib is Python 3.11+; the scripts support 3.9, so older Pythons get a smaller check.
+if python3 -c 'import tomllib' 2>/dev/null; then
 check "codex TOML parses; sandbox by role" "python3 -c \"
 import tomllib;h='$HOME/.codex'
 w=tomllib.load(open(h+'/agents/gentle-ai-worker.toml','rb'));r=tomllib.load(open(h+'/agents/review-risk.toml','rb'));p=tomllib.load(open(h+'/hcorc.config.toml','rb'))
 assert w['sandbox_mode']=='workspace-write' and r['sandbox_mode']=='read-only' and r['name']=='review-risk'
 assert 'Tool vocabulary (Codex CLI)' in p['developer_instructions']\""
+else
+check "codex sandbox by role (no tomllib)" "grep -q '^sandbox_mode = \"workspace-write\"' $HOME/.codex/agents/gentle-ai-worker.toml && grep -q '^sandbox_mode = \"read-only\"' $HOME/.codex/agents/review-risk.toml"
+fi
 check "cursor skill points at its prompt; read-only role" "grep -q \"$HOME/.cursor/skills/hcorc/prompt.md\" $HOME/.cursor/skills/hcorc/SKILL.md && grep -q '^readonly: true' $HOME/.cursor/agents/review-risk.md && ! grep -q readonly $HOME/.cursor/agents/gentle-ai-worker.md"
 check "no unfilled placeholders or conditionals anywhere" "! grep -r -l -E '\{\{[A-Z_]+\}\}|<!-- (if:|endif)' '$ORC_DIST'"
 
@@ -89,6 +94,27 @@ fi
 # 8. a broken settings.json aborts without writing
 echo '{oops' > "$S"
 check "invalid settings.json refused" "! I --cli claude >/dev/null 2>&1 && [ \"\$(cat '$S')\" = '{oops' ]"
+echo '{"hooks": {"PreToolUse": null}}' > "$S"
+check "a hooks event that is not a list is refused before any link" "! I --cli claude >/dev/null 2>&1 && [ ! -e $HOME/.claude/agents/hcorc.md ] && grep -q null '$S'"
+echo '{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": true}]}]}}' > "$S"
+check "a hook whose command is not text is refused before any link" "! I --cli claude >/dev/null 2>&1 && [ ! -e $HOME/.claude/agents/hcorc.md ] && grep -q true '$S'"
+echo '{}' > "$S"; I --cli claude >/dev/null; echo '{oops' > "$S"
+check "uninstall with broken settings keeps the record" "I --cli claude --uninstall | grep -q 'hooks left in place' && python3 '$REPO/install.py' --status | grep -q '^claude ' && [ ! -L $HOME/.claude/agents/hcorc.md ]"
+echo '{}' > "$S"
+check "and a later uninstall removes the hooks and the record" "I --cli claude --uninstall | grep -q 'hooks removed' && ! grep -q guard.py '$S' && ! python3 '$REPO/install.py' --status | grep -q '^claude '"
+check "save_manifest keeps entries another run saved meanwhile" "python3 -c \"
+import json, sys; sys.path.insert(0, '$REPO'); import install as I
+m = I.load_manifest(); m['mine|x|y'] = {'files': []}
+p = I.manifest_path(); p.parent.mkdir(parents=True, exist_ok=True)
+other = I.read_manifest(); other['theirs|x|y'] = {'files': []}; p.write_text(json.dumps(other))
+I.save_manifest(m); d = json.loads(p.read_text()); assert 'mine|x|y' in d and 'theirs|x|y' in d, d
+m.pop('mine|x|y'); I.save_manifest(m); d = json.loads(p.read_text()); assert 'mine|x|y' not in d and 'theirs|x|y' in d, d
+d.pop('theirs|x|y'); p.write_text(json.dumps(d))\""
+check "Skills bar: a reinstall puts the button back beside a third-party sibling" "python3 -c \"
+import sys; sys.path.insert(0, '$REPO'); import install as I
+t = {'id': 'w', 'type': 'column', 'children': [{'id': 'orc-skills-bar', 'type': 'row', 'children': [{'id': 'tabs', 'type': 'block'}, {'id': 'other', 'type': 'block'}]}, {'id': 'work-body', 'type': 'row', 'children': []}]}
+assert I.herdr_patch(t); ids = [c['id'] for c in t['children'][0]['children']]; assert ids == ['tabs', 'other', 'orc-skills-toggle'], ids
+assert I.herdr_patch(t); assert [c['id'] for c in t['children'][0]['children']].count('orc-skills-toggle') == 1\""
 
 # 9. the Herdr desktop Skills panel, in a throwaway Herdr home. A stub
 # herdr-app stands in for the real one, so no window is ever asked.
@@ -181,12 +207,113 @@ check "extras: a mod with its own installer runs it from the pinned source" "E >
 check "extras: status lists them with their pins" "python3 '$REPO/install.py' --status | grep -q 'extras .*alpha@2222222'"
 E --uninstall --only alpha >/dev/null; mkdir -p "$H/mods/alpha" && echo mine > "$H/mods/alpha/main.js"
 check "extras: someone else's mod folder is refused" "! E --only alpha >/dev/null && [ \"\$(cat '$H/mods/alpha/main.js')\" = mine ]"
+mkdir -p "$T/badbin"; printf '#!/bin/sh\n[ "$1" = check ] && { echo bad mod; exit 1; }\nexit 1\n' > "$T/badbin/herdr-app"; chmod +x "$T/badbin/herdr-app"
+check "extras: a build that fails its check leaves the user's mod in place" "! PATH='$T/badbin':\$PATH ORC_EXTRAS_SPEC=$T/spec.json ORC_EXTRAS_SRC=$SRC python3 '$REPO/herdr-app/extras.py' --only alpha --force >/dev/null && [ \"\$(cat '$H/mods/alpha/main.js')\" = mine ] && [ ! -e '$H/alpha.before-orc' ]"
 check "extras: --force moves it aside and links ours" "E --only alpha --force >/dev/null && [ -L '$H/mods/alpha' ] && [ -f '$H/alpha.before-orc/main.js' ]"
 check "extras: uninstall gives back slot, width and keys, runs the uninstaller, restores the moved mod" "E --uninstall >/dev/null && python3 -c \"import json;s=json.dumps(json.load(open('$H/layouts/mine2.json')));assert '{\\\"mod\\\": \\\"files\\\"}' in s and '300' in s,s;g=json.load(open('$H/keys.json'))['global'];assert 'cmd-alt-a' not in g and g['cmd-shift-m']=='mod.open:someone-else',g\" && [ ! -e '$H/tool-installed' ] && [ ! -L '$H/mods/tree' ] && [ \"\$(cat '$H/mods/alpha/main.js')\" = mine ] && [ ! -e '$ORC_DIST/abs${H}/mods/tree' ]"
+
+mkdir -p "$H/alpha.before-orc" && echo older > "$H/alpha.before-orc/main.js"
+check "extras: an earlier .before-orc is never deleted" "! E --only alpha --force >/dev/null && [ \"\$(cat '$H/alpha.before-orc/main.js')\" = older ] && [ \"\$(cat '$H/mods/alpha/main.js')\" = mine ]"
+rm -rf "$H/alpha.before-orc" "$H/mods/alpha"
+echo '{"global": {"cmd-alt-a": "mod.open:alpha"}}' > "$H/keys.json"
+check "extras: a key the user had bound to the same action stays on uninstall" "E --only alpha >/dev/null && E --uninstall --only alpha >/dev/null && python3 -c \"import json;g=json.load(open('$H/keys.json'))['global'];assert g.get('cmd-alt-a')=='mod.open:alpha',g\""
+
+mkdir -p "$T/proj6"; python3 "$REPO/install.py" --cli agy --scope project --project "$T/proj6" >/dev/null
+PYDIR=$(dirname "$(command -v python3)")
+check "uninstall without --cli removes what is recorded, CLI on PATH or not" "PATH='$T/nobin':/usr/bin:/bin '$PYDIR/python3' '$REPO/install.py' --uninstall --scope project --project '$T/proj6' >/dev/null && [ ! -e '$T/proj6/.agents/agents/hcorc/agent.md' ]"
+
+mkdir -p "$H/mods/alpha" && echo mine > "$H/mods/alpha/main.js"
+check "extras: a publish that fails after the check puts the user's mod back" "PATH='$T/bin':\$PATH ORC_EXTRAS_SPEC=$T/spec.json ORC_EXTRAS_SRC=$SRC python3 -c \"
+import sys; sys.path.insert(0, '$REPO/herdr-app'); import extras as X
+def boom(*a): raise OSError('boom')
+X.I.link = boom
+sys.exit(0 if X.install(['alpha'], False, True) is False else 1)\" >/dev/null && [ \"\$(cat '$H/mods/alpha/main.js')\" = mine ] && [ ! -e '$H/alpha.before-orc' ]"
+rm -rf "$H/mods/alpha"
+E --only tool >/dev/null & E --only alpha >/dev/null & wait
+check "extras: two runs at once both stay recorded" "python3 -c \"import json,os;m=json.load(open(os.path.expanduser('~/.local/state/orc/installs.json')));e=[v for k,v in m.items() if k.startswith('herdr-app-extras')][0];assert {'tool','alpha'} <= set(e['extras']),e\""
+check "extras: a failed upgrade keeps the previously installed build available" "PATH='$T/bin':\$PATH ORC_EXTRAS_SPEC=$T/spec.json ORC_EXTRAS_SRC=$SRC python3 -c \"
+import sys; sys.path.insert(0, '$REPO/herdr-app'); import extras as X
+from pathlib import Path
+from unittest.mock import patch
+link = Path('$H/mods/alpha')
+before = (link / 'main.js').read_bytes()
+rename = Path.rename
+def fail_stage(self, target):
+    if self.name == 'alpha' and self.parent.name == '.alpha.orc-stage':
+        raise OSError('could not move the staged build')
+    return rename(self, target)
+with patch.object(Path, 'rename', fail_stage):
+    assert not X.install(['alpha'], False, False)
+assert link.is_symlink() and (link / 'main.js').read_bytes() == before
+\" >/dev/null"
+E --uninstall >/dev/null
 
 # 13. ./install.sh: every part this machine has, in the same throwaway HOME.
 check "install.sh --dry-run walks every step" "PATH='$T/bin':\$PATH XDG_CONFIG_HOME=$X '$REPO/install.sh' --dry-run --cli agy --extras=tree 2>&1 | grep -q 'Herdr app: third-party mods' "
 check "install.sh --scope project skips the per-user parts" "'$REPO/install.sh' --cli agy --scope project --project '$P2' 2>&1 | grep -q 'per user, not per project' && [ -L '$P2/.agents/agents/hcorc/agent.md' ]"
+
+# 14. fixes from the code review
+# a relative ORC_DIST still gives links that resolve
+P3=$T/proj3; mkdir -p "$P3"
+check "relative ORC_DIST: links resolve" "(cd '$T' && ORC_DIST=reldist python3 '$REPO/install.py' --cli agy --scope project --project '$P3' >/dev/null) && [ -s '$P3/.agents/agents/hcorc/agent.md' ] && case \"\$(readlink '$P3/.agents/agents/hcorc/agent.md')\" in /*) true;; *) false;; esac"
+(cd "$T" && ORC_DIST=reldist python3 "$REPO/install.py" --cli agy --uninstall --scope project --project "$P3" >/dev/null)
+# a user's hook sharing an entry (matcher) with ours survives install and uninstall
+S2=$T/proj4/.claude/settings.json; mkdir -p "$T/proj4/.claude"
+printf '{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "mine-too.sh"}, {"type": "command", "command": "/old/clone/shared/bin/guard.py"}]}]}}\n' > "$S2"
+I --cli claude --scope project --project "$T/proj4" >/dev/null
+check "co-located user hook kept, old guard replaced" "grep -q mine-too.sh '$S2' && [ \$(grep -c 'shared/bin/guard.py' '$S2') = 1 ] && grep -q '$REPO/shared/bin/guard.py' '$S2'"
+I --cli claude --uninstall --scope project --project "$T/proj4" >/dev/null
+check "uninstall keeps the co-located user hook" "grep -q mine-too.sh '$S2' && ! grep -q guard.py '$S2'"
+# a broken settings.json stops only claude, before anything is written, and the rest is recorded
+echo '{oops' > "$T/proj4/.claude/settings.json"
+OUT=$(I --cli claude,agy --scope project --project "$T/proj4" 2>&1)
+check "broken settings.json: claude untouched, agy installed and recorded" "echo \"\$OUT\" | grep -q 'claude\] not installed' && [ ! -e '$T/proj4/.claude/agents/hcorc.md' ] && [ -L '$T/proj4/.agents/agents/hcorc/agent.md' ] && python3 '$REPO/install.py' --status | grep -q 'agy .*proj4'"
+I --cli agy --uninstall --scope project --project "$T/proj4" >/dev/null
+# the mods: --no-mods keeps them recorded; a renamed marketplace uninstalls the old refs
+printf '#!/bin/sh\necho "$*" >> "%s/claude-calls"\nexit 0\n' "$T" > "$T/bin/claude"; chmod +x "$T/bin/claude"
+CL() { PATH="$T/bin:$PATH" python3 "$REPO/install.py" --cli claude --scope project --project "$T/proj5" "$@"; }
+mkdir -p "$T/proj5"; CL >/dev/null
+MARKET=$(python3 -c "import json;print(json.load(open('$REPO/.claude-plugin/marketplace.json'))['name'])")
+check "mods installed and recorded" "grep -q 'plugin install orc-cache@$MARKET' '$T/claude-calls' && python3 -c \"import json,os;m=json.load(open(os.path.expanduser('~/.local/state/orc/installs.json')));e=[v for k,v in m.items() if k.endswith('proj5/.claude')][0];assert 'orc-cache@$MARKET' in e['mods'],e\""
+CL --no-mods >/dev/null
+check "--no-mods keeps them recorded" "python3 -c \"import json,os;m=json.load(open(os.path.expanduser('~/.local/state/orc/installs.json')));e=[v for k,v in m.items() if k.endswith('proj5/.claude')][0];assert e['mods'],e\""
+python3 - "$HOME/.local/state/orc/installs.json" <<'PY'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p))
+for k,v in m.items():
+    if k.endswith("proj5/.claude"): v["mods"]=["orc-cache@orchestator"]
+json.dump(m,open(p,"w"))
+PY
+: > "$T/claude-calls"; CL >/dev/null
+check "old marketplace's refs uninstalled on rerun" "grep -q 'plugin uninstall orc-cache@orchestator' '$T/claude-calls' && grep -q 'plugin marketplace remove orchestator' '$T/claude-calls' && grep -q 'plugin update orc-cache@$MARKET' '$T/claude-calls'"
+CL --uninstall >/dev/null
+check "uninstall removes the marketplace it recorded" "grep -q 'plugin marketplace remove $MARKET' '$T/claude-calls'"
+# herdr-app: a layout the installer did not clone is never deleted
+echo '{"layout:main": {"json": "x"}}' > "$H/installed.json"; echo '{"layout": "main"}' > "$H/shared.json"
+rm -rf "$H/mods/orc-skills"
+HP >/dev/null; rm -f "$H/layouts/main-orc.json"
+cp "$H/layouts/main.json" "$H/layouts/mine3.json"
+python3 - "$H/layouts/mine3.json" <<'PY'
+import json,sys
+p=sys.argv[1]
+d={"id": "root", "type": "row", "children": [{"id": "work", "type": "column", "children": [
+  {"id": "tabs", "type": "block", "size": {"px": 42}, "content": {"mod": "tabs"}},
+  {"id": "work-body", "type": "row", "children": [{"id": "main", "type": "block", "content": {"tab": "active"}}]}]}]}
+json.dump(d, open(p, "w"))
+PY
+echo '{"layout": "mine3"}' > "$H/shared.json"
+HP >/dev/null
+check "herdr-app: reinstall on the user's own layout patches it" "grep -q orc-skills-panel '$H/layouts/mine3.json'"
+python3 - "$H/layouts/mine3.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p))
+def walk(n):
+    if n.get("id")=="orc-skills-bar": n["children"].append({"id":"someone-else","type":"block","content":{"mod":"x"}})
+    for c in n.get("children",[]): walk(c)
+walk(d); json.dump(d, open(p,"w"))
+PY
+HP --uninstall >/dev/null
+check "herdr-app: uninstall keeps the user's layout and a button someone else added" "[ -f '$H/layouts/mine3.json' ] && grep -q someone-else '$H/layouts/mine3.json' && ! grep -q -E 'orc-skills-(toggle|panel)' '$H/layouts/mine3.json'"
 
 echo "install: pass=$pass fail=$fail"
 [ "$fail" = 0 ]

@@ -15,8 +15,8 @@ export const START = "# >>> orc-flow keys";
 export const END = "# <<< orc-flow keys";
 export const KEY = "prefix+shift+z";
 
-export const configPath = (env = process.env) =>
-  path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "herdr", "config.toml");
+export const configPath = (env = process.env) => env.HERDR_CONFIG_PATH
+  || path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "herdr", "config.toml");
 
 const entry = (key, action, description, off = false) => {
   const c = off ? "# " : "";

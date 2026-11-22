@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { addFlow, bashFlows, FLOW_LIVE_MS, FLOW_RECENT_MS, hcSenders, layout, layoutTree, paneOfFile } from './graph'
+import { addFlow, bashFlows, confirmedHandoffs, FLOW_LIVE_MS, FLOW_RECENT_MS, hcSenders, layout, layoutTree, paneOfFile } from './graph'
 import type { Flow, FlowDir, Sub, Tracked } from '../types'
 import type { Orchestrator, Where } from './roster'
 import { agentOf, pollRoster, roleOf, safe, stateDir, whereAmI } from './roster'
@@ -22,16 +22,21 @@ const TITLE = 'Agents'
 const TICK_MS = 250
 /** Ticks between polls of the multiplexer, the subagents and the reports folder. */
 const POLL_EVERY = 8
+/** A subagent missing from the engine's list this long after its last change has ended. */
+const GONE_MS = 5_000
+
+type Options = { openPane?: boolean }
 
 /** What the session's activation settles, shared with the helpers below. */
 const cfg: {
+  opt: Options
   where?: Where
   timer?: { cancel: () => void }
   ticks: number
   isPolling: boolean
   reportsSince: number
   seen: Map<string, number>
-} = { ticks: 0, isPolling: false, reportsSince: 0, seen: new Map() }
+} = { opt: {}, ticks: 0, isPolling: false, reportsSince: 0, seen: new Map() }
 
 async function flow($: EngineInterface, target: string, dir: FlowDir): Promise<void> {
   const f: Flow = { target, dir, at: await $.clock.now() }
@@ -86,8 +91,10 @@ async function pollSubs($: EngineInterface, now: number): Promise<void> {
   const finished: string[] = []
   const next = subs.flatMap(s => {
     const info = s.agentId ? infos.get(s.agentId) : undefined
-    const status = info ? subStatus(info.status) : s.status
-    if (status === s.status) return now - s.since < SUB_KEEP_MS * 10 || status === 'working' ? [s] : []
+    // One the engine no longer lists has ended, though no poll saw it finish.
+    const gone = !info && s.agentId !== undefined && (s.status === 'working' || s.status === 'blocked') && now - s.since > GONE_MS
+    const status = info ? subStatus(info.status) : gone ? 'done' : s.status
+    if (status === s.status) return now - s.since < SUB_KEEP_MS * 10 || status === 'working' || status === 'blocked' ? [s] : []
     if ((status === 'done' || status === 'failed') && (s.status === 'working' || s.status === 'blocked')) finished.push(s.id)
     return [{ ...s, status, since: now }]
   })
@@ -134,7 +141,8 @@ async function activate($: EngineInterface, agent: Orchestrator): Promise<void> 
   if ((await read($, agentAtom)) !== agent) await update($, agentAtom, () => agent)
   cfg.reportsSince = await $.clock.now()
   await $.command.register({ name: 'orc-graph', description: 'Show the orchestrator agents and the work passing between them' })
-  void $.ui.open({ id: PANE, title: TITLE })
+  // Opt-in: the pane opens on /orc-graph, or by itself only with the openPane option.
+  if (cfg.opt.openPane === true) void $.ui.open({ id: PANE, title: TITLE })
   cfg.timer?.cancel()
   cfg.timer = $.clock.every(TICK_MS, () => void tick($))
   await poll($)
@@ -147,7 +155,9 @@ async function fromClassic($: EngineInterface, e: { agent_type?: string; agent_i
   if (agent) await activate($, agent)
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  cfg.opt = (options ?? {}) as Options
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     const agent = agentOf(await $.env.get('CLAUDE_CODE_AGENT')) ?? agentOf((await read($, agentAtom)) ?? undefined)
@@ -166,7 +176,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') {
+    if (e.reason === 'clear' || e.reason === 'resume') {
       await update($, flowsAtom, () => [])
       await update($, subsAtom, () => [])
     }
@@ -199,8 +209,12 @@ export const register: Register = on => {
       for (const t of found.out) await flow($, t, 'out')
       const startedAt = await $.clock.now()
       const result = await next(e)
+      // A refused call or one sent to the background returns at once: nothing came back yet.
+      if (result.deny !== undefined || result.isError === true || e.run_in_background === true) return result
       const took = (await $.clock.now()) - startedAt
       for (const a of found.awaits) if (took < a.timeoutMs - 1_000) await flow($, a.target, 'in')
+      for (const t of found.reads) await flow($, t, 'in')
+      for (const name of confirmedHandoffs(result.text ?? '', found.handoffs)) await flow($, name, 'out')
       return result
     }
     if ((e.tool === 'Write' || e.tool === 'Edit') && e.file_path.startsWith(`${reports}handoffs/`)) {
@@ -222,7 +236,8 @@ export const register: Register = on => {
     if (cfg.where && !spawned.deny) {
       const now = await $.clock.now()
       await update($, subsAtom, list => [
-        ...list.filter(s => s.id !== e.tool_use_id),
+        // A resumed subagent keeps its agentId under a new tool call: one row for it.
+        ...list.filter(s => s.id !== e.tool_use_id && (spawned.agentId === undefined || s.agentId !== spawned.agentId)),
         { id: e.tool_use_id, agentId: spawned.agentId, type: e.subagentType, label: e.description, status: 'working' as const, since: now },
       ])
       await flow($, e.tool_use_id, 'out')

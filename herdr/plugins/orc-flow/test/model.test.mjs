@@ -67,3 +67,16 @@ test("names and helpers", () => {
   assert.equal(middle("deepseek-v4-flash:free", 12), "deepse…:free");
   assert.deepEqual(visibleSubs({ turnAt: 5, subs: [{ status: "done", lastAt: 1 }, { status: "working", lastAt: 2 }] }, NOW).length, 1);
 });
+
+test("graph: a role pane and a subagent with one name: messages to the pane, delegations to the subagent", () => {
+  const explore = row("w1:p4", "gentle-ai-explore", { parent: "w1:p1" });
+  const sub = { id: "a1", type: "gentle-ai-explore", status: "working", lastAt: NOW - 1000, model: "claude-haiku-5-5" };
+  const s = new Map([
+    ["w1:p1", { model: "claude-opus-4-7", turnAt: NOW - 60000, sends: [{ t: NOW - 3000, to: "gentle-ai-explore" }], reads: [], recvs: [],
+      recent: [{ t: NOW - 2000, delegate: "gentle-ai-explore", hint: "look around" }], subs: [sub] }],
+  ]);
+  const g = graph([lead, explore], s, t, NOW);
+  const by = (kind) => g.events.filter((e) => e.kind === kind).map((e) => [e.from, e.to]);
+  assert.deepEqual(by("message"), [["w1:p1", "w1:p4"]]);
+  assert.deepEqual(by("delegates"), [["w1:p1", "a1"]]);
+});

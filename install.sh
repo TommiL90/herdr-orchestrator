@@ -48,7 +48,7 @@ clis() {
   return 1
 }
 run_clis() {
-  if clis; then
+  if [ -n "$uninstall" ] || clis; then  # uninstall: install.py finds what is recorded, CLI on PATH or not
     step "coding CLIs" eval "python3 \"\$ROOT/install.py\" $uninstall $common $cli_args"
   else
     printf '\n== coding CLIs: none on PATH (claude, opencode, agy, codex, cursor-agent); skipped\n'

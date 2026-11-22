@@ -18,14 +18,17 @@ HC_TERMINAL_ID=$(hc get boss --json | python3 -c 'import json,sys;print(json.loa
 STATE_DIR="$HOME/.local/state/orc"; mkdir -p "$STATE_DIR"
 unset HERDR_SESSION
 export HERDR_WORKSPACE_ID=orc-guard-test
-STATE="$STATE_DIR/herdorc-default-$HERDR_WORKSPACE_ID.json"
+unset HERDR_PANE_ID
+STATE="$STATE_DIR/herdorc-default-$HERDR_WORKSPACE_ID.pane-none.json"
 echo '{"panes":{"w1:p7":"gentle-ai-worker"},"tabs":["w1:t3"]}' > "$STATE"
 
-E=$(mktemp); pass=0; fail=0
+E=$(mktemp); O=$(mktemp); pass=0; fail=0
+# t <expect> <agent> <command>: expect 0 (allow), 2 (block) or ask (the user confirms).
 t() {
   local exp=$1 ag=$2 cmd=$3 rc
   printf '%s' "$cmd" | python3 -c 'import json,sys;print(json.dumps({"agent_type":sys.argv[1],"tool_input":{"command":sys.stdin.read()}}))' "$ag" \
-    | "$GUARD" 2>"$E"; rc=$?
+    | "$GUARD" 2>"$E" >"$O"; rc=$?
+  [ "$rc" = 0 ] && grep -q '"permissionDecision": "ask"' "$O" && rc=ask
   if [ "$rc" = "$exp" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL exp=$exp rc=$rc [$ag] $cmd :: $(cat "$E")"; fi
 }
 
@@ -62,7 +65,9 @@ t 0 herdorc 'herdr pane list --workspace w1'
 t 0 herdorc 'herdr --help'
 t 0 herdorc 'herdr agent prompt gentle-ai-worker "go; then herdr server stop"'
 t 0 herdorc 'herdr --session test server stop'
-t 0 herdorc 'hc server stop'
+t ask herdorc 'hc server stop'
+t ask herdorc 'herdr-app do space.close --id s1'
+t 0 herdorc 'hc ls'
 # herdorc blocked
 t 2 herdorc 'herdr'
 t 2 herdorc 'herdr session attach main'
@@ -79,6 +84,41 @@ t 2 herdorc 'herdr integration install claude'
 # alone (no herdr answering here) is not enough. tests/test_orc_herdr.sh covers the live case.
 t 2 herdorc 'herdr pane close w1:p7'
 t 2 herdorc 'herdr tab close w1:t3'
+
+# the other multiplexer: its destructive commands need the user's confirmation
+t ask hcorc 'herdr server stop'
+t ask hcorc 'herdr pane close w1:p9'
+t 0 hcorc 'herdr --session scratch server stop'
+t 2 hcorc 'herdr pane list; hc server stop'
+
+# HC_SESSION only exempts hc, the last value wins, and nested shells never inherit it
+t ask hcorc 'HC_SESSION=x herdr server stop'
+t 2 herdorc 'HC_SESSION=x herdr pane close w1:p9'
+t 2 hcorc 'HC_SESSION=x herdr-app do space.close --id s1'
+t 2 hcorc "HC_SESSION=x bash -c 'unset HC_SESSION; hc server stop'"
+t 2 hcorc "HC_SESSION=x bash -c 'hc server stop'"
+t 2 hcorc "HC_SESSION=x HC_SESSION=$HC_SESSION hc server stop"
+t 0 hcorc 'env -u HC_SESSION HC_SESSION=x hc server stop' # set again after -u: another session
+t 2 hcorc 'HC_SESSION=x env -u HC_SESSION hc server stop'
+t 2 hcorc 'HC_SESSION=x env -i hc server stop'
+t 2 herdorc 'herdr --session other --session default server stop'
+t 0 herdorc 'herdr --session default --session other server stop'
+t 2 herdorc 'herdr session stop default'
+t 2 herdorc 'herdr session delete main'
+t 0 herdorc 'herdr session list'
+
+# redirections are not commands; heredocs are data unless a shell reads them
+t 2 hcorc '>/dev/null hc server stop'
+t 2 hcorc '2>&1 hc update'
+t 0 hcorc 'hc read kid 2>&1'
+t 0 hcorc 'hc kill kid >/dev/null'
+t 0 hcorc 'hc kill kid 2>/dev/null; hc rm kid &>/dev/null'
+t 2 hcorc 'hc read 2>&1'
+t 0 hcorc $'cat > notes.md <<\'EOF\'\nhc server stop is the user\'s call\nEOF'
+t 2 hcorc $'bash <<EOF\nhc server stop\nEOF'
+t 2 hcorc $'echo "it\'s"\nhc server stop'
+t 0 hcorc 'command -v hc'
+t 0 hcorc 'hc wait --children=any --timeout 540'
 
 # session exemption: only a literal session other than the current one
 t 0 herdorc 'herdr --session=scratch server stop'
@@ -113,6 +153,31 @@ t 2 herdorc "bash -c 'herdr server stop'"
 t 0 hcorc 'timeout 30 hc read kid --lines 20'
 t 0 hcorc 'grep -rn hc README.md'
 
+# heredocs and comments: a quoted `<<` or a comment hides no later line, and a
+# heredoc read by a shell later in the line is checked
+t 2 hcorc $'echo "a <<X"\nhc server stop'
+t 2 hcorc $'cd /tmp && bash <<EOF\nhc server stop\nEOF'
+t 0 hcorc $'cat <<\'EOF\' > notes.md\nhc server stop\nEOF'
+t 2 hcorc $'echo hi # a note\nhc server stop'
+t 2 hcorc $'echo "# not a comment"; hc server stop'
+t 0 hcorc 'echo done # hc server stop'
+
+# closing a tab needs verified panes: a failed `pane list` is no empty tab
+STUB=$(mktemp -d)
+cat > "$STUB/herdr" <<'SH'
+#!/bin/sh
+case "$1 $2" in
+  "pane list") [ "${STUB_PANES:-}" = fail ] && exit 1
+    echo '{"result":{"panes":[{"pane_id":"w1:p7","tab_id":"w1:t3","label":"gentle-ai-worker","terminal_id":"term7"}]}}' ;;
+  "tab list") echo '{"result":{"tabs":[{"tab_id":"w1:t3","label":"herdorc · roles"}]}}' ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$STUB/herdr"
+PATH="$STUB:$PATH" t 0 herdorc 'herdr tab close w1:t3'
+PATH="$STUB:$PATH" STUB_PANES=fail t 2 herdorc 'herdr tab close w1:t3'
+rm -rf "$STUB"
+
 # internal subagents of an orchestrator session follow its rules
 CLAUDE_CODE_AGENT=hcorc t 2 gentle-ai-worker 'hc server stop'
 CLAUDE_CODE_AGENT=herdorc t 2 gentle-ai-verify 'herdr server stop'
@@ -121,5 +186,5 @@ CLAUDE_CODE_AGENT=hcorc t 0 gentle-ai-worker 'hc ls'
 echo "guard: pass=$pass fail=$fail"
 hc kill kid >/dev/null 2>&1; hc kill other >/dev/null 2>&1; hc kill boss >/dev/null 2>&1
 hc server stop >/dev/null 2>&1
-rm -f "$E" "$STATE"
+rm -f "$E" "$O" "$STATE"
 [ "$fail" = 0 ]

@@ -18,7 +18,11 @@ const PANE = 'orc-context'
 const TITLE = 'Context'
 const POLL_MS = 2_000
 
-type Options = { report?: boolean }
+type Options = { report?: boolean; openPane?: boolean }
+/** A subagent missing from the engine's list this long after its last change has ended. */
+const GONE_MS = 5_000
+/** The CLI names the multiplexers give Claude Code: only its panes write reports. */
+const isClaude = (cli: string | undefined): boolean => /^claude/.test(cli ?? '')
 
 /** What the session settles, shared with the helpers below. */
 const cfg: {
@@ -27,8 +31,8 @@ const cfg: {
   timer?: { cancel: () => void }
   ticks: number
   isPolling: boolean
-  /** This session's own report file, when it runs inside an hc/herdr pane. */
-  reportTo?: string
+  /** This session's own report file, when it runs inside an hc/herdr pane (null: none). */
+  reportTo?: string | null
   lastReported?: number
 } = { opt: {}, ticks: 0, isPolling: false }
 
@@ -46,6 +50,7 @@ async function readPanes($: EngineInterface, members: readonly Member[]): Promis
   if (!w) return
   const found: CtxReport[] = []
   for (const m of members) {
+    if (!isClaude(m.cli)) continue // a shell or another CLI now: an old report is not its
     try {
       const r = parseReport(m.ctxKey, await $.fs.read(reportPath(w.home, m.ctxKey)))
       if (r) found.push(r)
@@ -63,12 +68,19 @@ async function readSubs($: EngineInterface): Promise<void> {
   const infos = new Map((await $.agent.list()).map(a => [a.id, a]))
   const now = await $.clock.now()
   let changed = false
-  const next = subs.map(s => {
+  const next = subs.flatMap(s => {
     const info = infos.get(s.agentId)
+    const running = s.status === 'working' || s.status === 'blocked'
+    if (!info && running && now - s.since > GONE_MS) {
+      changed = true
+      // Never spawned through the subagent tool (an engine fork: compaction, memory): not a
+      // subagent of the orchestrator. Otherwise it ended without a poll seeing it finish.
+      return s.type === 'subagent' && s.label === '' ? [] : [{ ...s, status: 'done' as const, since: now }]
+    }
     const status = info ? subStatus(info.status) : s.status
-    if (status === s.status) return s
+    if (status === s.status) return [s]
     changed = true
-    return { ...s, status, since: now }
+    return [{ ...s, status, since: now }]
   })
   if (changed) await update($, subsAtom, () => next)
 }
@@ -99,7 +111,8 @@ async function activate($: EngineInterface, agent: Orchestrator): Promise<void> 
   cfg.where = await whereAmI($, agent)
   if ((await read($, agentAtom)) !== agent) await update($, agentAtom, () => agent)
   await $.command.register({ name: 'orc-context', description: 'Show the context each orchestrator agent has used' })
-  void $.ui.open({ id: PANE, title: TITLE })
+  // Opt-in: the pane opens on /orc-context, or by itself only with the openPane option.
+  if (cfg.opt.openPane === true) void $.ui.open({ id: PANE, title: TITLE })
   cfg.timer?.cancel()
   cfg.timer = $.clock.every(POLL_MS, () => {
     cfg.ticks += 1
@@ -126,6 +139,9 @@ async function reportFile($: EngineInterface): Promise<string | undefined> {
 }
 
 async function report($: EngineInterface, model: string | undefined): Promise<void> {
+  // Settled on first use, so a reload (or a changed option) that sees no session start
+  // still reports.
+  if (cfg.reportTo === undefined) cfg.reportTo = (await reportFile($)) ?? null
   if (!cfg.reportTo) return
   const ctx = (await $.session.usage()).context
   if (ctx.tokens === undefined || ctx.tokens === cfg.lastReported) return
@@ -138,7 +154,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    cfg.reportTo = await reportFile($)
+    cfg.reportTo = (await reportFile($)) ?? null
     const agent = agentOf(await $.env.get('CLAUDE_CODE_AGENT')) ?? agentOf((await read($, agentAtom)) ?? undefined)
     if (agent) await activate($, agent)
     return started
@@ -154,9 +170,12 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') {
+    if (e.reason === 'clear' || e.reason === 'resume') {
       await update($, subsAtom, () => [])
       cfg.lastReported = undefined
+    } else if (cfg.reportTo) {
+      // The session leaves the pane: its numbers must not stay on a shell or the next CLI.
+      try { await $.fs.write(cfg.reportTo, JSON.stringify({ ended: true, at: await $.clock.now() })) } catch { /* best effort */ }
     }
     return next(e)
   })

@@ -1,28 +1,34 @@
 --- a/test/scan.test.js
 +++ b/test/scan.test.js
-@@ -87,6 +87,25 @@
+@@ -86,3 +86,31 @@
+   assert.equal(s.subs.length, 1);
    assert.deepEqual([s.subs[0].type, s.subs[0].status, s.subs[0].model, s.subs[0].tools], ["audit", "done", "claude-haiku-5-5", 1]);
- });
- 
-+test("an orc.py handoff is a message to the pane it opens; opening alone is not", () => {
-+  const dir = path.join(home, "orc");
-+  const bash = (s, id, command) => call(s, id, "Bash", { command });
-+  setup(dir, lines([
-+    ask(0, `${SECRET} list shared/bin`),
-+    bash(1, "o1", `/repo/shared/bin/orc.py ensure gentle-ai-explore --launch opencode --handoff /s/${SECRET}.md`),
-+    result(2, "o1"),
-+    bash(3, "o2", `python3 ~/.local/share/orc/orc.py --as hcorc ensure review-risk --name review-risk-2 --handoff=/s/h.md`),
-+    result(4, "o2"),
-+    bash(5, "o3", `orc.py ensure gentle-ai-worker --launch codex`),
-+    result(6, "o3"),
-+    bash(7, "o4", `orc.py status && hc send t7 "${SECRET}"`),
-+    result(8, "o4"),
-+  ]));
-+  const { sessions, raw } = scan(dir, path.join(home, "orc.json"));
-+  assert.deepEqual(sessions[0].sends.map((m) => m.to), ["gentle-ai-explore", "review-risk-2", "t7"]);
-+  assert.ok(!raw.includes(SECRET));
 +});
 +
- test("never prints prompts, messages or tool output", () => {
-   const dir = path.join(home, "secret");
-   setup(dir, lines(rows));
++test("an orc.py handoff is only drawn after delivery to the named pane", () => {
++  const dir = path.join(home, "orc");
++  const bash = (s, id, command) => call(s, id, "Bash", { command });
++  const ensure = (s, id, content, is_error = false) => ({
++    type: "user", timestamp: at(s), message: { content: [{ type: "tool_result", tool_use_id: id, content, is_error }] },
++  });
++  setup(dir, lines([
++    ask(0, SECRET),
++    bash(1, "o1", "/repo/shared/bin/orc.py ensure gentle-ai-explore --launch opencode --handoff /s/" + SECRET + ".md"),
++    ensure(2, "o1", JSON.stringify({ name: "gentle-ai-explore-2", prompt_delivered_at_launch: true, pointer: SECRET })),
++    bash(3, "o2", "python3 ~/.local/share/orc/orc.py --as hcorc ensure --name review-risk-2 review-risk \\\n  --launch claude --prompt-file=/s/h.md"),
++    ensure(4, "o2", JSON.stringify({ name: "review-risk-2", prompt_delivered_at_launch: false })),
++    bash(5, "o3", "orc.py ensure gentle-ai-worker --launch codex"),
++    result(6, "o3"),
++    bash(7, "o4", "orc.py ensure jd-judge-a --handoff /s/h.md"),
++    result(8, "o4"),
++    bash(9, "o5", "orc.py status && hc send --if idle t7 " + SECRET),
++    result(10, "o5"),
++    bash(11, "o6", "echo done # hc send t8 x"),
++    result(12, "o6"),
++    bash(13, "o7", "orc.py ensure review-risk --launch claude --handoff /s/missing.md"),
++    ensure(14, "o7", "handoff file not found", true),
++  ]));
++  const { sessions, raw } = scan(dir, path.join(home, "orc.json"));
++  assert.deepEqual(sessions[0].sends.map((m) => m.to), ["gentle-ai-explore-2", "t7"]);
++  assert.ok(!raw.includes(SECRET));
+ });

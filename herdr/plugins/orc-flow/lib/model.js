@@ -81,12 +81,20 @@ export function graph(list, sessions, t, wall, guessed = new Set()) {
     const s = sessions.get(a.address);
     nodes.push({ key: a.address, name: a.name, role: a.label, title: a.title || null, guessed: guessed.has(a.address), model: s?.model ?? null, status: a.status, color: tone(s?.model, t, a.app), program: a.program, parent: a.parent, session: s, terminal: a.address, names: a.names ?? [a.address, a.label] });
     for (const k of visibleSubs(s, wall)) {
-      nodes.push({ key: k.id, name: k.type, role: k.type, title: k.description || null, guessed: guessed.has(a.address), model: k.model, status: k.status, color: tone(k.model, t, a.app), program: a.program, parent: a.address, session: k, names: [k.id, k.type] });
+      nodes.push({ key: k.id, name: k.type, role: k.type, title: k.description || null, guessed: guessed.has(a.address), model: k.model, status: k.status, color: tone(k.model, t, a.app), program: a.program, parent: a.address, session: k, names: [k.id, k.type], sub: true });
     }
   }
-  // The first node that answers to a name, as a search in order would find it.
-  const byName = new Map();
-  for (const n of nodes) for (const name of n.names) if (name != null && !byName.has(name)) byName.set(name, n);
+  // The first node that answers to a name. A role pane and an internal subagent may share
+  // one (`gentle-ai-explore`): messages and replies go to panes first, delegations to
+  // subagents first.
+  const index = (first) => {
+    const map = new Map();
+    for (const n of [...nodes.filter(first), ...nodes.filter((n) => !first(n))]) {
+      for (const name of n.names) if (name != null && !map.has(name)) map.set(name, n);
+    }
+    return map;
+  };
+  const byName = index((n) => !n.sub), bySub = index((n) => n.sub);
   const find = (to) => byName.get(to);
   // A report file is named `<pane-name>-<task>`: the longest name it starts with.
   const byFile = (file) => {
@@ -110,7 +118,7 @@ export function graph(list, sessions, t, wall, guessed = new Set()) {
       if (from && from !== n && !from.session) events.push({ t: m.t, from: from.key, to: n.key, kind: "message" });
     }
     for (const x of s?.recent ?? []) {
-      const sub = find(x.delegate ?? x.hint);
+      const sub = bySub.get(x.delegate ?? x.hint);
       if (x.delegate && sub) events.push({ t: x.t, from: n.key, to: sub.key, kind: "delegates", label: x.hint });
       if (x.back && sub) events.push({ t: x.t, from: sub.key, to: n.key, kind: "came back" });
     }

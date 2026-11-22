@@ -1,6 +1,9 @@
 {
-  "name": "orchestator",
-  "owner": { "name": "orchestator" },
+  "name": "herdr-orchestrators",
+  "owner": {
+    "name": "herdr-orchestrators"
+  },
+  "description": "Claude Code-only mods for the hcorc and herdorc orchestrators: prompt-cache meter, role-pane graph, context per agent.",
   "plugins": [
     {
       "name": "orc-cache",
@@ -10,12 +13,12 @@
     {
       "name": "orc-graph",
       "source": "./mods/orc-graph",
-      "description": "Claude Code only: a live graph of the orchestrator's role panes and subagents, with the work passing between them."
+      "description": "Claude Code only: a live graph of the orchestrator's role panes and subagents, with the work passing between them. Opens with /orc-graph."
     },
     {
       "name": "orc-context",
       "source": "./mods/orc-context",
-      "description": "Claude Code only: the context each orchestrator agent has used; Claude Code role panes report their own."
+      "description": "Claude Code only: the context each orchestrator agent has used; Claude Code role panes report their own. Opens with /orc-context."
     }
   ]
 }

@@ -10,9 +10,12 @@ A recorded id is only trusted while it still points at the same object:
 herdr reuses pane and tab ids (for example after a server restart), so an id
 alone would let a user's new pane pass for one of ours. See herdr_owned().
 """
+import contextlib
+import fcntl
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 
 STATE_DIR = Path(os.path.expanduser("~/.local/state/orc"))
@@ -24,13 +27,25 @@ def safe(text):
 
 
 def herdr_session():
-    return os.environ.get("HERDR_SESSION") or "default"
+    """herdr sets HERDR_SESSION in a named session's panes; the socket path
+    (`.../sessions/<name>/herdr.sock`) says it too. Else the default session.
+    herdr/plugins/orc-flow/lib/herdr.mjs (herdrSession) follows the same rule."""
+    if os.environ.get("HERDR_SESSION"):
+        return os.environ["HERDR_SESSION"]
+    m = re.search(r"[\\/]sessions[\\/]([^\\/]+)[\\/]herdr\.sock$", os.environ.get("HERDR_SOCKET_PATH", ""))
+    return m.group(1) if m else "default"
 
 
-def herdorc_state_path(session=None, workspace=None):
+def herdorc_state_path(session=None, workspace=None, lead=None):
+    """One herdorc's record of the panes and tabs it created: one file per lead pane,
+    so two herdorc in one workspace each control only their own. The first format's
+    file (one per workspace) is never adopted: it does not say which lead made a
+    pane, so its panes stay nobody's and the guard keeps blocking their close. orc-flow
+    (lib/herdr.mjs) and the Claude Code mods (hooks/roster.ts) build the same path."""
     session = session or herdr_session()
     workspace = workspace or os.environ.get("HERDR_WORKSPACE_ID") or "none"
-    return STATE_DIR / f"herdorc-{safe(f'{session}-{workspace}')}.json"
+    lead = lead or os.environ.get("HERDR_PANE_ID") or "none"
+    return STATE_DIR / f"herdorc-{safe(f'{session}-{workspace}')}.pane-{safe(lead)}.json"
 
 
 def load_herdorc_state(path):
@@ -50,9 +65,63 @@ def load_herdorc_state(path):
     return {"panes": panes, "tabs": tabs}
 
 
+def write_atomic(path, text):
+    """Replace the file in one step, so a reader never sees it half written."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+@contextlib.contextmanager
+def locked(path):
+    """An exclusive lock for a read-modify-write of `path` (a `<path>.lock` beside it)."""
+    lock = Path(f"{path}.lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def save_herdorc_state(path, state):
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(state, indent=1))
+    write_atomic(path, json.dumps(state, indent=1))
+
+
+def update_herdorc_state(path, change):
+    """Load, change (a function of the state that edits it in place or returns a new
+    one) and save, under the lock, so two orc.py runs never drop each other's panes."""
+    with locked(path):
+        state = load_herdorc_state(path)
+        new = change(state)
+        state = state if new is None else new
+        save_herdorc_state(path, state)
+        return state
+
+
+def apply_prune(current, before, pruned):
+    """The current state with a prune applied only where it was decided.
+
+    `pruned` was computed from `before`, the state read before herdr was asked.
+    An entry added or changed since (another run created a pane meanwhile) was
+    never checked against those lists, so it is kept as it is now.
+    """
+    out = {}
+    for kind in ("panes", "tabs"):
+        cur, old, new = current.get(kind, {}), before.get(kind, {}), pruned.get(kind, {})
+        out[kind] = {k: (new[k] if k in old and v == old[k] else v)
+                     for k, v in cur.items()
+                     if not (k in old and v == old[k] and k not in new)}
+    return out
 
 
 def herdr_owned(state, panes, tabs):
@@ -60,8 +129,8 @@ def herdr_owned(state, panes, tabs):
 
     A pane is ours while its id exists, its label is the name we gave it and its
     terminal is the one we recorded. A tab is ours while its id exists, its
-    label is the title we gave it and every pane in it is ours (so closing it
-    never takes a pane someone moved in). Entries in the first state format have
+    label is the title we gave it, the pane list shows at least one pane in it, and
+    every pane in it is ours (so closing it never takes a pane someone moved in). Entries in the first state format have
     no terminal or title: they are adopted from the live row once.
 
     Returns (owned_pane_ids, owned_tab_ids, pruned_state). pruned_state drops
@@ -91,6 +160,7 @@ def herdr_owned(state, panes, tabs):
         if rec.get("title") is not None and label != rec["title"]:
             continue
         kept_tabs[tid] = {"title": rec.get("title") if rec.get("title") is not None else label}
-        if all(pid in kept_panes for pid in by_tab.get(tid, [])):
+        members = by_tab.get(tid, [])
+        if members and all(pid in kept_panes for pid in members):  # none seen: herdr did not show it, not ours
             owned_tabs.add(tid)
     return set(kept_panes), owned_tabs, {"panes": kept_panes, "tabs": kept_tabs}

@@ -15,8 +15,12 @@ export type { Flow, FlowDir }
 
 // ---------- reading commands ----------
 
-/** Shell words per simple command: quotes and escapes honoured, `; & | ( )` split commands. */
+/**
+ * Shell words per simple command: quotes and escapes honoured, `; & | ( )` and
+ * newlines split commands, backslash-newline continues one.
+ */
 export function shellCommands(command: string): string[][] {
+  command = command.replace(/\\\r?\n/g, ' ')
   const cmds: string[][] = []
   let words: string[] = []
   let word = ''
@@ -40,10 +44,14 @@ export function shellCommands(command: string): string[][] {
       else word += c
       continue
     }
+    if (c === '#' && !inWord) { // a comment runs to the end of the line; the newline still ends the command
+      while (i + 1 < command.length && command[i + 1] !== '\n') i++
+      continue
+    }
     if (c === '"' || c === "'") { quote = c; inWord = true; continue }
     if (c === '\\' && i + 1 < command.length) { word += command[++i] ?? ''; inWord = true; continue }
+    if (';&|()\n'.includes(c)) { endCmd(); continue } // before the whitespace test: \n ends a command
     if (/\s/.test(c)) { endWord(); continue }
-    if (';&|()\n'.includes(c)) { endCmd(); continue }
     word += c
     inWord = true
   }
@@ -86,11 +94,37 @@ function flagValue(words: readonly string[], flag: string): string | undefined {
   return undefined
 }
 
+type Handoff = { role: string; name?: string }
+
 export type BashFlows = {
   /** Panes this command hands work or a message to. */
   out: string[]
   /** Panes whose reply this command waits for: a flow back once it returns before its timeout. */
   awaits: { target: string; timeoutMs: number }[]
+  /** Panes whose answer this command reads back: a flow back once it returns. */
+  reads: string[]
+  /** Requests awaiting confirmation in the JSON result of orc.py ensure. */
+  handoffs: Handoff[]
+}
+
+/** herdr's global options, before its subcommand. */
+const HERDR_GLOBALS = new Set(['--session', '--machine', '--remote'])
+function dropHerdrGlobals(words: readonly string[]): string[] {
+  const out = [words[0] ?? '']
+  let i = 1
+  for (; i < words.length; i++) {
+    const w = words[i] ?? ''
+    if (HERDR_GLOBALS.has(w)) { i++; continue }
+    if ([...HERDR_GLOBALS].some(g => w.startsWith(`${g}=`))) continue
+    break
+  }
+  return [...out, ...words.slice(i)]
+}
+
+const ENSURE_VALUED = new Set(['--name', '--launch', '--model', '--handoff', '--prompt-file'])
+const ms = (raw: string | undefined, unit: number): number => {
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n * unit : Infinity
 }
 
 /**
@@ -100,38 +134,67 @@ export type BashFlows = {
 export function bashFlows(command: string, resolve: (word: string) => string | undefined): BashFlows {
   const out: string[] = []
   const awaits: BashFlows['awaits'] = []
+  const reads: string[] = []
+  const handoffs: Handoff[] = []
   for (const raw of shellCommands(command)) {
-    const w = program(raw)
+    let w = program(raw)
     const prog = base(w[0])
+    if (prog === 'herdr') w = dropHerdrGlobals(w)
     if (prog === 'hc' && w[1] === 'send') {
-      const t = resolve(firstArg(w, 2, new Set(['--if'])) ?? '')
-      if (t) out.push(t)
-    } else if (prog === 'hc' && w[1] === 'wait') {
-      const t = resolve(firstArg(w, 2, new Set(['--timeout', '--children', '--for'])) ?? '')
-      const s = Number(flagValue(w, '--timeout'))
-      if (t) awaits.push({ target: t, timeoutMs: Number.isFinite(s) && s > 0 ? s * 1000 : Infinity })
-    } else if (prog === 'herdr' && w[1] === 'agent' && w[2] === 'prompt') {
-      const t = resolve(firstArg(w, 3, new Set(['--timeout'])) ?? '')
+      const t = resolve(firstArg(w, 2, new Set(['--if', '--timeout'])) ?? '')
       if (t) {
         out.push(t)
-        if (w.includes('--wait')) {
-          const ms = Number(flagValue(w, '--timeout'))
-          awaits.push({ target: t, timeoutMs: Number.isFinite(ms) && ms > 0 ? ms : Infinity })
-        }
+        if (w.includes('--wait')) awaits.push({ target: t, timeoutMs: ms(flagValue(w, '--timeout'), 1000) })
       }
+    } else if (prog === 'hc' && w[1] === 'wait') {
+      const t = resolve(firstArg(w, 2, new Set(['--timeout', '--children', '--for'])) ?? '')
+      if (t) awaits.push({ target: t, timeoutMs: ms(flagValue(w, '--timeout'), 1000) })
+    } else if (prog === 'herdr' && w[1] === 'agent' && w[2] === 'prompt') {
+      const t = resolve(firstArg(w, 3, new Set(['--timeout', '--until'])) ?? '')
+      if (t) {
+        out.push(t)
+        if (w.includes('--wait')) awaits.push({ target: t, timeoutMs: ms(flagValue(w, '--timeout'), 1) })
+      }
+    } else if (prog === 'herdr' && w[1] === 'agent' && w[2] === 'wait') {
+      const t = resolve(firstArg(w, 3, new Set(['--timeout', '--until'])) ?? '')
+      if (t) awaits.push({ target: t, timeoutMs: ms(flagValue(w, '--timeout'), 1) })
+    } else if (prog === 'herdr' && (w[1] === 'agent' || w[1] === 'pane') && w[2] === 'read') {
+      const t = resolve(firstArg(w, 3, new Set(['--source', '--lines', '--format'])) ?? '')
+      if (t) reads.push(t)
     } else if (prog === 'herdr' && w[1] === 'pane' && /^(send-text|send-keys|run)$/.test(w[2] ?? '')) {
       const t = resolve(firstArg(w, 3, new Set()) ?? '')
       if (t) out.push(t)
     } else if (/^orc(\.py)?$/.test(prog) || (prog.startsWith('python') && base(w[1]) === 'orc.py')) {
+      // `orc.py [--as <agent>] ensure [options] <role> [options]`: a handoff only with
+      // --launch, which starts the agent that receives it.
       const at = w.indexOf('ensure')
-      const role = at >= 0 ? w[at + 1] : undefined
-      if (role && w.includes('--handoff')) {
-        const t = resolve(flagValue(w, '--name') ?? role)
-        if (t) out.push(t)
+      const rest = at >= 0 ? w.slice(at + 1) : []
+      const role = firstArg(rest, 0, ENSURE_VALUED)
+      const handoff = flagValue(rest, '--handoff') ?? flagValue(rest, '--prompt-file')
+      if (role && roleOf(role) && handoff && flagValue(rest, '--launch')) {
+        handoffs.push({ role, name: flagValue(rest, '--name') })
       }
     }
   }
-  return { out, awaits }
+  return { out, awaits, reads, handoffs }
+}
+
+/** Read only delivered handoffs from the JSON printed by orc.py ensure. */
+export function confirmedHandoffs(text: string, attempts: readonly Handoff[]): string[] {
+  if (!attempts.length) return []
+  const pending = attempts.slice()
+  const delivered: string[] = []
+  for (const [, json] of text.matchAll(/(?:^|\n)[ \t]*(\{(?:[^\r\n]*\}|\r?\n[\s\S]*?\r?\n\}))(?=[ \t]*(?:\r?\n|$))/g)) {
+    let reply: { name?: unknown; prompt_sent?: unknown; prompt_delivered_at_launch?: unknown } | null
+    try { reply = JSON.parse(json ?? '') } catch { continue }
+    const name = reply?.name
+    if (typeof name !== 'string') continue
+    const i = pending.findIndex(attempt => attempt.name ? name === attempt.name : roleOf(name) === attempt.role)
+    if (i < 0) continue
+    pending.splice(i, 1)
+    if (reply?.prompt_sent === true || reply?.prompt_delivered_at_launch === true) delivered.push(name)
+  }
+  return delivered
 }
 
 /** The pane a report or handoff file names: `<pane-name>-<task-slug>.md`. */

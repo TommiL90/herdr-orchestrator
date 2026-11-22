@@ -1,9 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { bashFlows, hcSenders, junction, layoutCards, layoutTree, paneOfFile } from './graph'
+import { bashFlows, confirmedHandoffs, hcSenders, junction, layoutCards, layoutTree, paneOfFile } from './graph'
 import type { Run } from './graph'
-import { normStatus, parseHc, parseHerdr, roleOf } from './roster'
+import { herdorcStatePath, herdrSessionOf, normStatus, parseHc, parseHerdr, roleOf } from './roster'
 import { buildView } from './view'
 
 const known = (names: string[]) => (w: string) => (names.includes(w) ? w : roleOf(w) ? w : undefined)
@@ -43,9 +43,15 @@ test('herdr: recorded panes joined with the agent list, gone or reused ids dropp
     { pane_id: 'w1:p2', agent: 'claude', agent_status: 'working', terminal_id: 'term_a' },
     { pane_id: 'w1:p3', agent: 'codex', agent_status: 'idle', terminal_id: 'term_other' },
   ] } })
-  const members = parseHerdr(agents, state, 'orc', new Set(['w1:p2', 'w1:p3']))
+  const live = new Map([['w1:p2', { label: 'gentle-ai-worker', terminal: 'term_a' }], ['w1:p3', { label: 'jd-judge-a', terminal: 'term_b' }]])
+  const members = parseHerdr(agents, state, 'orc', live)
   expect(members.map(m => m.name)).toEqual(['gentle-ai-worker'])
   expect(members[0]?.ctxKey).toBe('herdr-orc-w1_p2')
+  // A pane the user relabelled, or whose terminal changed, is no longer the orchestrator's.
+  const relabelled = new Map([['w1:p2', { label: 'notes', terminal: 'term_a' }]])
+  expect(parseHerdr(agents, state, 'orc', relabelled)).toEqual([])
+  const reused = new Map([['w1:p2', { label: 'gentle-ai-worker', terminal: 'term_z' }]])
+  expect(parseHerdr(agents, state, 'orc', reused)).toEqual([])
 })
 
 test('the orchestrator commands that pass work out, and those that wait for the answer', async () => {
@@ -54,9 +60,17 @@ test('the orchestrator commands that pass work out, and those that wait for the 
   const p = bashFlows('herdr agent prompt gentle-ai-explore "go" --wait --timeout 270000', r)
   expect(p.out).toEqual(['gentle-ai-explore'])
   expect(p.awaits).toEqual([{ target: 'gentle-ai-explore', timeoutMs: 270_000 }])
-  expect(bashFlows('/repo/shared/bin/orc.py --as hcorc ensure gentle-ai-verify --name gentle-ai-verify-2 --launch claude --handoff /r/h.md', r).out)
-    .toEqual(['gentle-ai-verify-2'])
+  expect(bashFlows('/repo/shared/bin/orc.py --as hcorc ensure gentle-ai-verify --name gentle-ai-verify-2 --launch claude --handoff /r/h.md', r).handoffs)
+    .toEqual([{ role: 'gentle-ai-verify', name: 'gentle-ai-verify-2' }])
+  // Options before the role, --prompt-file, a continued line; no --launch starts nothing.
+  expect(bashFlows('orc.py ensure --name gentle-ai-verify-2 gentle-ai-verify \\\n  --launch codex --prompt-file=/r/h.md', r).handoffs)
+    .toEqual([{ role: 'gentle-ai-verify', name: 'gentle-ai-verify-2' }])
+  expect(bashFlows('orc.py ensure gentle-ai-verify --handoff /r/h.md', r).handoffs).toEqual([])
   expect(bashFlows('hc wait gentle-ai-worker --timeout 270', r).awaits).toEqual([{ target: 'gentle-ai-worker', timeoutMs: 270_000 }])
+  expect(bashFlows('herdr --session orc agent wait gentle-ai-worker --timeout 270000', r).awaits).toEqual([{ target: 'gentle-ai-worker', timeoutMs: 270_000 }])
+  expect(bashFlows('herdr agent read --lines 80 gentle-ai-worker', r).reads).toEqual(['gentle-ai-worker'])
+  // A newline ends a command as `;` does.
+  expect(bashFlows('cd /r\nhc send gentle-ai-worker "x"', r).out).toEqual(['gentle-ai-worker'])
   expect(bashFlows('rtk hc ls --json && hc send t1 "note"', r).out).toEqual([])
   expect(bashFlows('echo "hc send gentle-ai-worker hi"', r).out).toEqual([])
 })
@@ -128,16 +142,31 @@ const engine = (on: Parameters<TestBody>[1], agent: string, opened: string[], st
   on('tool.call', () => ({ result: {} }) as never)
 }
 
-test('an hcorc session opens the pane, lists its panes and draws a dispatch', async ($, on) => {
+test('an hcorc session lists its panes and draws a dispatch, and leaves the pane closed', async ($, on) => {
   const opened: string[] = []
   const state: Record<string, unknown> = {}
   engine(on, 'hcorc', opened, state)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  expect(opened).toContain('orc-graph')
+  expect(opened).toEqual([])
   expect(JSON.stringify(state.members)).toContain('"name":"gentle-ai-worker"')
   expect(state.phase).toBe('implementing')
   await $.tool.call({ tool: 'Bash', command: 'hc send --if idle gentle-ai-worker "read /h/.local/state/orc/reports/handoffs/gentle-ai-worker-x.md"' })
   expect(JSON.stringify(state.flows)).toContain('"target":"gentle-ai-worker","dir":"out"')
+})
+
+test('openPane opens the pane when an orchestrator session starts', { options: { openPane: true } }, async ($, on) => {
+  const opened: string[] = []
+  engine(on, 'hcorc', opened, {})
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(opened).toContain('orc-graph')
+})
+
+test('a wait sent to the background or refused draws no answer', async ($, on) => {
+  const state: Record<string, unknown> = {}
+  engine(on, 'hcorc', [], state)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'hc wait gentle-ai-worker --timeout 270', run_in_background: true })
+  expect(JSON.stringify(state.flows ?? [])).not.toContain('"dir":"in"')
 })
 
 test('any other session stays without the pane', async ($, on) => {
@@ -145,4 +174,26 @@ test('any other session stays without the pane', async ($, on) => {
   engine(on, 'general-purpose', opened)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   expect(opened).toEqual([])
+})
+
+test('the herdorc state file and session match orc_state.py', async () => {
+  expect(herdorcStatePath('/h', 'orc test', 'w1', 'w1:p1')).toBe('/h/.local/state/orc/herdorc-orc_test-w1.pane-w1_p1.json')
+  expect(herdrSessionOf(undefined, '/x/herdr/sessions/review/herdr.sock')).toBe('review')
+  expect(herdrSessionOf('named', '/x/herdr/sessions/review/herdr.sock')).toBe('named')
+  expect(herdrSessionOf(undefined, '/x/herdr/herdr.sock')).toBe('default')
+})
+
+test('ensure only logs confirmed handoffs; comments are not commands', async () => {
+  const r = (w: string) => (roleOf(w) ? w : undefined)
+  const f = bashFlows('orc.py ensure review-risk --launch claude --handoff /r/h.md', r)
+  expect(f.out).toEqual([])
+  expect(f.handoffs).toEqual([{ role: 'review-risk' }])
+  expect(confirmedHandoffs('{\n "name": "review-risk-2",\n "prompt_sent": true\n}', f.handoffs)).toEqual(['review-risk-2'])
+  expect(confirmedHandoffs('{"name": "review-risk-adv", "prompt_sent": true}', f.handoffs)).toEqual([])
+  expect(confirmedHandoffs('handoff file not found', f.handoffs)).toEqual([])
+  const named = bashFlows('orc.py ensure review-risk --name review-risk-2 --launch claude --handoff /r/h.md', r)
+  expect(named.out).toEqual([])
+  expect(confirmedHandoffs('{"name":"review-risk-2","prompt_sent":false}', named.handoffs)).toEqual([])
+  expect(confirmedHandoffs('{"name":"review-risk-2","prompt_delivered_at_launch":true}', named.handoffs)).toEqual(['review-risk-2'])
+  expect(bashFlows('echo hi # hc send gentle-ai-worker x\nhc send gentle-ai-verify go', r).out).toEqual(['gentle-ai-verify'])
 })

@@ -29,12 +29,34 @@ test("what is not a message", () => {
   assert.deepEqual(sh('herdr agent prompt "$NAME" "x"'), []); // unresolvable: a variable
   assert.deepEqual(sh("echo herdr-agent prompt x"), []);
   assert.deepEqual(targets("Read", { file_path: "/x/herdr agent prompt y" }), []);
+  assert.deepEqual(sh("echo hi # herdr agent prompt w1:p2 go"), []);
+  assert.deepEqual(sh("echo 'a # b' # note\nherdr agent prompt w1:p2 go"), ["w1:p2"]);
 });
 
 test("orc.py ensure counts only with --handoff, to --name or the role", () => {
   assert.deepEqual(sh("/r/shared/bin/orc.py --as herdorc ensure gentle-ai-worker --name gentle-ai-worker-2 --launch codex --handoff /s/h.md"), ["gentle-ai-worker-2"]);
   assert.deepEqual(sh("'/r/shared/bin/orc.py' ensure review-risk --launch claude --model haiku --handoff /s/h.md"), ["review-risk"]);
   assert.deepEqual(sh("/r/shared/bin/orc.py ensure review-risk"), []);
+});
+
+test("option values are not targets", () => {
+  assert.deepEqual(sh("hc send --if idle gentle-ai-worker 'x'"), ["gentle-ai-worker"]);
+  assert.deepEqual(sh("hc send --timeout=30 --wait t7 'x'"), ["t7"]);
+  assert.deepEqual(sh("herdr agent prompt --wait --timeout 270000 gentle-ai-worker 'x'"), ["gentle-ai-worker"]);
+  assert.deepEqual(reads("Bash", { command: "herdr pane read --lines 80 w1:p2" }), [{ from: "w1:p2" }]);
+  assert.deepEqual(sh('herdr agent prompt worker "please wait; then hc send t9 now"'), ["worker"]);
+});
+
+test("orc.py ensure: options before the role, --prompt-file, continuations, no --launch", () => {
+  assert.deepEqual(sh("/r/orc.py ensure --name review-risk-2 review-risk --launch claude --prompt-file /s/h.md"), ["review-risk-2"]);
+  assert.deepEqual(sh("python3 /r/orc.py --as hcorc ensure jd-judge-a \\\n  --launch codex \\\n  --handoff /s/h.md"), ["jd-judge-a"]);
+  assert.deepEqual(sh("/r/orc.py ensure review-risk --handoff /s/h.md"), []);
+});
+
+test("report files read from a shell", () => {
+  assert.deepEqual(reads("Bash", { command: "cat /s/orc/reports/review-risk-auth.md" }), [{ file: "review-risk-auth" }]);
+  assert.deepEqual(reads("Bash", { command: "cat /s/orc/reports/handoffs/review-risk-auth.md" }), []);
+  assert.deepEqual(reads("Read", { file_path: "/repo/docs/reports/summary.md" }), []);
 });
 
 test("hcorc's forms still count: hc send and SendMessage", () => {
@@ -56,7 +78,7 @@ const claudeRows = [
   { type: "assistant", timestamp: at(1), message: { model: "claude-opus-4-7", usage: { input_tokens: 10, cache_read_input_tokens: 1000 }, content: [
     { type: "tool_use", id: "a", name: "Bash", input: { command: "/r/orc.py ensure gentle-ai-worker --launch codex --handoff /s/h.md", description: "open worker" } },
   ] } },
-  { type: "user", timestamp: at(2), message: { content: [{ type: "tool_result", tool_use_id: "a" }] } },
+  { type: "user", timestamp: at(2), message: { content: [{ type: "tool_result", tool_use_id: "a", content: '{"name":"gentle-ai-worker","prompt_sent":true}' }] } },
   { type: "assistant", timestamp: at(3), message: { model: "claude-opus-4-7", content: [
     { type: "tool_use", id: "b", name: "Read", input: { file_path: "/s/orc/reports/gentle-ai-worker-fix.md" } },
     { type: "tool_use", id: "c", name: "Agent", input: { subagent_type: "Explore", description: "find callers" } },
@@ -72,6 +94,39 @@ test("digest: model, context, sends, reads, the call still running", () => {
   assert.equal(d.recent[0].name, "Send");
   assert.equal(d.tools, 3);
   assert.deepEqual(Object.keys(d.open), ["b", "c"]);
+});
+
+test("ensure without --name: a confirmed send goes to the pane named in the result", () => {
+  const cmd = "/r/orc.py ensure review-risk --launch claude --handoff /s/h.md";
+  const d = digest(blank(), [
+    { type: "assistant", timestamp: at(1), message: { content: [{ type: "tool_use", id: "e", name: "Bash", input: { command: cmd } }] } },
+    { type: "user", timestamp: at(2), message: { content: [{ type: "tool_result", tool_use_id: "e", content: [{ type: "text", text: '{\n "name": "review-risk-2",\n "address": "w1:p4",\n "prompt_sent": true\n}' }] }] } },
+  ]);
+  assert.deepEqual(d.sends, [{ t: T0 + 1000, to: "review-risk-2" }]);
+  assert.equal(d.recent[0].hint, "review-risk-2");
+  assert.equal(d.recent[0].ensure, undefined);
+  const c = digestCodex(blank(), [
+    { timestamp: at(1), type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "z", arguments: JSON.stringify({ cmd }) } },
+    { timestamp: at(2), type: "response_item", payload: { type: "function_call_output", call_id: "z", output: 'Output:\n{"name": "review-risk-3", "prompt_delivered_at_launch": true}' } },
+  ]);
+  assert.deepEqual(c.sends.map((x) => x.to), ["review-risk-3"]);
+  const kept = digest(blank(), [
+    { type: "assistant", timestamp: at(1), message: { content: [{ type: "tool_use", id: "f", name: "Bash", input: { command: cmd } }] } },
+    { type: "user", timestamp: at(2), message: { content: [{ type: "tool_result", tool_use_id: "f", content: '{"name": "review-risk-adv"}' }] } },
+  ]);
+  assert.deepEqual(kept.sends, []);
+});
+
+test("an ensure attempt only adds a send when the result confirms delivery", () => {
+  const start = (command) => ({ type: "assistant", timestamp: at(1), message: { content: [{ type: "tool_use", id: "e", name: "Bash", input: { command } }] } });
+  const result = (content, is_error = false) => ({ type: "user", timestamp: at(2), message: { content: [{ type: "tool_result", tool_use_id: "e", content, is_error }] } });
+  const cmd = "orc.py ensure review-risk --launch claude --handoff /s/h.md";
+  const explicit = cmd + " --name review-risk-2";
+  const delivered = '{"name":"review-risk-2","prompt_sent":true}';
+  assert.deepEqual(digest(blank(), [start(cmd)]).sends, []);
+  assert.deepEqual(digest(blank(), [start(cmd), result("handoff file not found", true)]).sends, []);
+  assert.deepEqual(digest(blank(), [start(explicit), result('{"name":"review-risk-2","prompt_sent":false}')]).sends, []);
+  assert.deepEqual(digest(blank(), [start(explicit), result(delivered)]).sends.map(s => s.to), ["review-risk-2"]);
 });
 
 const codexRows = [

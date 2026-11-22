@@ -24,7 +24,10 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
 - `shared/core`, `shared/docs`, `shared/roles` and most of `shared/skills`
   are ported from tomidev-shell by `scripts/port-*.py`, with every change
   recorded in `shared/PROVENANCE-*.md`. Change a ported text through its
-  port script, so the provenance stays true.
+  port script, so the provenance stays true. That includes `roles.json`:
+  `port-roles.py` writes it whole (a role's `model` comes from its `MODELS`).
+  The ported core and docs use the neutral terms too; a CLI-specific line
+  goes in a conditional block of the core, never in a doc read at runtime.
 - `herdr-app/patches/agent-flow/` patches the third-party Herdr app mod
   herdr-agent-flow so it draws `orc.py ensure --handoff` as a message. Its
   README names the agent-flow commit the patches are made against and how to
@@ -41,11 +44,27 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
 - `orc.py` identifies the orchestrator from `--as <agent>` or
   `$CLAUDE_CODE_AGENT`. The mods read its files, so keep these stable:
   the phase file name and its `phase` key (`orc-cache`), the herdorc state
-  file, and `~/.local/state/orc/reports` (`orc-graph`).
+  file (one per lead pane: `herdorc-<session>-<workspace>.pane-<lead>.json`,
+  so two herdorc in one workspace each control only the panes they created),
+  and `~/.local/state/orc/reports` (`orc-graph`).
 - `mods/orc-graph/hooks/roster.ts` and `mods/orc-context/hooks/roster.ts`
-  duplicate `ROLES`, the role-name pattern, the herdorc state file path and
-  `safe()` from `orc.py` / `orc_state.py`. A change there needs the same change
-  in both copies.
+  duplicate `ROLES`, the role-name pattern, the herdorc state file path,
+  `safe()` and the pane ownership rule (id, label, terminal) from `orc.py` /
+  `orc_state.py`. A change there needs the same change in both copies.
+- Commands are read as shell words in four places, each a copy for a reason
+  (a mod or plugin installs alone): `shared/bin/guard.py`; `shellCommands` and
+  `program` in `mods/orc-graph/hooks/graph.ts`, copied into
+  `mods/orc-cache/hooks/cache.ts`; and `commands`/`calls` in
+  `herdr/plugins/orc-flow/lib/scan.cjs`, copied into
+  `herdr-app/patches/agent-flow/orc-handoff.patch`. A fix in one copy goes to
+  its twin. They agree that an option's value is never a target and that
+  `orc.py ensure` hands off only with `--launch` and `--handoff` (or
+  `--prompt-file`). The graphs use the pane name in ensure's JSON answer once
+  `prompt_sent` or `prompt_delivered_at_launch` confirms delivery.
+- The Claude Code mods' panes are opt-in: `/orc-graph` and `/orc-context` open
+  them, their `openPane` option opens them at session start. Never open a pane
+  unasked. Bump a mod's `version` when its behaviour changes, so
+  `install.py`'s `plugin update` picks it up.
 - `herdr-app/mods/orc-skills` reads `orc.py skills --json`; keep its `conflicts`
   and `skills` keys stable. Run `herdr-app check herdr-app/mods/orc-skills`
   after changing it. Its layout node IDs (`orc-skills-bar`, `-toggle`,
@@ -76,8 +95,11 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
 - Regenerate this repo's `.claude/`: `python3 scripts/build-agents.py`
 - Install: `./install.sh --help`, `installers/<target>.sh --help`,
   `python3 install.py --help`
-- Tests: `bash tests/test_install.sh` (self-contained), then
+- Tests: `bash tests/test_install.sh`, `bash tests/test_skills.sh`,
+  `bash tests/test_runtime.sh` (self-contained), then
   `bash tests/test_guard.sh`, `bash tests/test_orc_herdr.sh`,
   `bash tests/test_orc_hc.sh` (need herdr / Herdr desktop).
+- Claude Code mods: `claude plugin validate mods/<mod>`,
+  `claude plugin test mods/<mod>`.
 - herdr skill drift: `python3 scripts/sync-herdr-skill.py`
 - orc-flow plugin tests: `node --test herdr/plugins/orc-flow/test/`

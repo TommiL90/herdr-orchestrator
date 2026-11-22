@@ -30,11 +30,33 @@ export function herdrSession(env = process.env) {
   return m ? m[1] : "default";
 }
 
-// shared/bin/orc_state.py: `~/.local/state/orc/herdorc-<session>-<workspace>.json`, with
-// `safe()` applied to "<session>-<workspace>". Keep both in step.
+// shared/bin/orc_state.py: one file per herdorc lead pane,
+// `~/.local/state/orc/herdorc-<session>-<workspace>.pane-<lead>.json`, with `safe()` applied
+// to "<session>-<workspace>" and to the lead. Keep both in step.
 export const safe = (text) => String(text || "none").replace(/[^A-Za-z0-9_.-]/g, "_");
-export function statePath(session, workspace, home = os.homedir()) {
-  return path.join(home, ".local", "state", "orc", `herdorc-${safe(`${session}-${workspace || "none"}`)}.json`);
+const stateDir = (home) => path.join(home, ".local", "state", "orc");
+export function statePath(session, workspace, lead, home = os.homedir()) {
+  return path.join(stateDir(home), `herdorc-${safe(`${session}-${workspace || "none"}`)}.pane-${safe(lead)}.json`);
+}
+
+// Every herdorc's record in this workspace, each pane tagged with its lead as the file
+// name has it (`safe(<lead pane>)`), so each lead gets only its own panes. The first
+// format's single file names no lead: orc_state.py never adopts it, and neither does this.
+export function loadStates(session, workspace, livePanes, home = os.homedir()) {
+  const head = `herdorc-${safe(`${session}-${workspace || "none"}`)}.pane-`;
+  let names = [];
+  try { names = fs.readdirSync(stateDir(home)).filter((n) => n.startsWith(head) && n.endsWith(".json")); } catch { /* none yet */ }
+  const panes = {};
+  const live = new Map(livePanes.filter((p) => p.workspace_id === workspace).map((p) => [p.pane_id, p]));
+  for (const n of names.sort()) {
+    const lead = n.slice(head.length, -".json".length);
+    for (const [id, rec] of Object.entries(loadState(path.join(stateDir(home), n)).panes)) {
+      if (matchesPane(rec, live.get(id)) && (rec.terminal || !panes[id]?.terminal)) {
+        panes[id] = { ...rec, lead };
+      }
+    }
+  }
+  return { panes };
 }
 
 // orc_state.load_herdorc_state: panes {id: {name, terminal}}; the first format had {id: name}.
@@ -49,14 +71,14 @@ export function loadState(file) {
 
 // orc_state.herdr_owned, panes only: a recorded pane is the lead's while its id exists, its
 // label is the name orc.py gave it and its terminal is the one recorded (herdr reuses ids).
+const matchesPane = (rec, pane) =>
+  pane && (pane.label ?? "") === rec.name && (!rec.terminal || pane.terminal_id === rec.terminal);
+
 export function ownedPanes(state, panes) {
   const live = new Map(panes.map((p) => [p.pane_id, p]));
   const out = new Set();
   for (const [id, rec] of Object.entries(state?.panes ?? {})) {
-    const p = live.get(id);
-    if (!p || (p.label ?? "") !== rec.name) continue;
-    if (rec.terminal && p.terminal_id !== rec.terminal) continue;
-    out.add(id);
+    if (matchesPane(rec, live.get(id))) out.add(id);
   }
   return out;
 }
@@ -108,14 +130,17 @@ export function targets(list) {
   }));
 }
 
-// Which pane runs herdorc. herdr has no `--parent`, and the state file doesn't name the
-// lead, so in order: the pane labelled `herdorc…` (orc.py's phase label) or with an agent
+// Which pane runs herdorc. herdr has no `--parent`, so in order: the pane the plugin was
+// opened from when a state file names it as a lead; the pane labelled `herdorc…` (orc.py's phase label) or with an agent
 // named so; the pane found last time, while it holds the same terminal; the agent whose
 // session sent to the lead's role panes; the pane the plugin was opened from; the only
 // agent that is not a role pane. Null when none applies.
-export function findLead(list, { owned = new Set(), remembered = null, sessions = null, origin = null } = {}) {
+export function findLead(list, { owned = new Set(), remembered = null, sessions = null, origin = null, leads = new Set() } = {}) {
   const agents = list.filter((r) => r.isAgent && !owned.has(r.address) && !r.role);
-  const byLabel = list.find((r) => LEAD_RE.test(r.label ?? "") || LEAD_RE.test(r.agentName ?? ""));
+  const own = leads.has(origin) && list.find((r) => r.address === origin);
+  if (own) return { lead: own, how: "state file" };
+  const labelled = (r) => LEAD_RE.test(r.label ?? "") || LEAD_RE.test(r.agentName ?? "");
+  const byLabel = list.find((r) => leads.has(r.address) && labelled(r)) ?? list.find(labelled);
   if (byLabel) return { lead: byLabel, how: "label" };
   const kept = remembered && list.find((r) => r.address === remembered.pane && r.terminal === remembered.terminal);
   if (kept) return { lead: kept, how: "remembered" };
@@ -141,8 +166,14 @@ export function world(snap, state, opts = {}) {
   const ws = (snap.workspaces ?? []).find((w) => w.workspace_id === workspace) ?? null;
   const all = rows(snap, workspace, opts.self);
   const owned = ownedPanes(state, (snap.panes ?? []).filter((p) => p.workspace_id === workspace));
-  const { lead, how } = findLead(all, { ...opts, owned });
-  if (lead) for (const r of all) if (owned.has(r.address) && r !== lead) r.parent = lead.address;
+  // With one file per lead, a pane is the child of the lead that recorded it; the others'
+  // panes show beside. A pane without a lead (ORC_FLOW_STATE_FILE) goes to the lead found.
+  const recs = state?.panes ?? {};
+  const named = new Set(Object.values(recs).map((r) => r.lead).filter(Boolean));
+  const leads = new Set(all.filter((r) => named.has(safe(r.address))).map((r) => r.address));
+  const { lead, how } = findLead(all, { ...opts, owned, leads });
+  const mine = (id) => !recs[id]?.lead || recs[id].lead === safe(lead.address);
+  if (lead) for (const r of all) if (owned.has(r.address) && r !== lead && mine(r.address)) r.parent = lead.address;
   // Agents and role panes take part; other shells only run things.
   const list = all.filter((r) => r.isAgent || r.role || owned.has(r.address));
   const plain = all.filter((r) => !list.includes(r));
@@ -151,7 +182,7 @@ export function world(snap, state, opts = {}) {
 
 // The lead found by label or messages is kept, so it stays the lead once herdorc clears its
 // phase label. Keyed by session and workspace, in the temp folder; losing it costs nothing.
-const leadFile = (session, workspace) => path.join(process.env.ORC_FLOW_STATE || path.join(os.tmpdir(), "herdr-orc-flow"), `lead-${safe(`${session}-${workspace}`)}.json`);
+const leadFile = (session, workspace) => path.join(process.env.ORC_FLOW_STATE || path.join(os.tmpdir(), `herdr-orc-flow-${os.userInfo().uid}`), `lead-${safe(`${session}-${workspace}`)}.json`);
 export function recallLead(session, workspace) {
   try { return JSON.parse(fs.readFileSync(leadFile(session, workspace), "utf8")); } catch { return null; }
 }

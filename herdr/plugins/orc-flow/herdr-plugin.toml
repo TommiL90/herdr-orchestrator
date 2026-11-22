@@ -1,6 +1,6 @@
 id = "orc-flow"
 name = "orc-flow"
-version = "0.1.0"
+version = "0.1.1"
 description = "herdorc and its role panes as a live graph: each pane's CLI, model and status, and the messages between them. Any coding CLI."
 platforms = ["macos", "linux"]
 
@@ -8,7 +8,7 @@ platforms = ["macos", "linux"]
 # exactly; `api snapshot` gives every pane and agent in one call. Tested on 0.9.5.
 min_herdr_version = "0.9.5"
 
-# `plugin install` runs this; `plugin link` does not. It only checks that Node 22.5+
+# `plugin install` runs this; `plugin link` does not (install.py --herdr runs it). It only checks that Node 22.13+
 # (for node:sqlite, which reads Codex's and opencode's databases) is on PATH.
 [[build]]
 command = ["sh", "bin/check-node.sh"]

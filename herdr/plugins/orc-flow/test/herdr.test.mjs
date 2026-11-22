@@ -2,9 +2,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { rows, world, findLead, ownedPanes, parseState, statePath, herdrSession, targets, roleOf } from "../lib/herdr.mjs";
+import { rows, world, findLead, ownedPanes, parseState, statePath, loadStates, herdrSession, targets, roleOf } from "../lib/herdr.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 
@@ -85,8 +87,48 @@ test("roles and sessions", () => {
 });
 
 test("statePath matches shared/bin/orc_state.py", () => {
-  for (const [session, ws] of [["default", "w1"], ["my sess/1", "w:2"], ["orc-test-9", ""]]) {
-    const py = execFileSync("python3", ["-c", `import sys; sys.path.insert(0, ${JSON.stringify(path.join(repo, "shared/bin"))}); import orc_state, pathlib; print(orc_state.herdorc_state_path(sys.argv[1], sys.argv[2] or None).relative_to(pathlib.Path.home()))`, session, ws], { encoding: "utf8", env: { ...process.env, HERDR_WORKSPACE_ID: "" } }).trim();
-    assert.equal(path.relative(process.env.HOME, statePath(session, ws)), py);
+  for (const [session, ws, lead] of [["default", "w1", "w1:p1"], ["my sess/1", "w:2", "w2:p9"], ["orc-test-9", "", ""]]) {
+    const py = execFileSync("python3", ["-c", `import sys; sys.path.insert(0, ${JSON.stringify(path.join(repo, "shared/bin"))}); import orc_state, pathlib; print(orc_state.herdorc_state_path(sys.argv[1], sys.argv[2] or None, sys.argv[3] or None).relative_to(pathlib.Path.home()))`, session, ws, lead], { encoding: "utf8", env: { ...process.env, HERDR_WORKSPACE_ID: "", HERDR_PANE_ID: "" } }).trim();
+    assert.equal(path.relative(process.env.HOME, statePath(session, ws, lead)), py);
   }
+});
+
+test("loadStates tags each lead's panes with that lead; the first format's file names none and is skipped", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "orc-flow-states-"));
+  const dir = path.join(home, ".local", "state", "orc");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(statePath("default", "w1", "w1:p1", home), JSON.stringify({ panes: { "w1:p2": { name: "gentle-ai-worker", terminal: "a" } } }));
+  fs.writeFileSync(statePath("default", "w1", "w1:p5", home), JSON.stringify({ panes: { "w1:p6": { name: "review-risk", terminal: "b" } } }));
+  fs.writeFileSync(statePath("default", "w1", "w1:p9", home), JSON.stringify({ panes: { "w1:p2": { name: "gentle-ai-worker", terminal: "old" } } }));
+  fs.writeFileSync(path.join(dir, "herdorc-default-w1.json"), JSON.stringify({ panes: { "w1:p3": "jd-judge-a" } }));
+  fs.writeFileSync(statePath("default", "w12", "w12:p1", home), JSON.stringify({ panes: { "w12:p2": { name: "x", terminal: "c" } } }));
+  const live = [
+    pane("w1:p2", { label: "gentle-ai-worker", terminal_id: "a" }),
+    pane("w1:p6", { label: "review-risk", terminal_id: "b" }),
+  ];
+  const { panes } = loadStates("default", "w1", live, home);
+  assert.deepEqual(Object.keys(panes).sort(), ["w1:p2", "w1:p6"]);
+  assert.equal(panes["w1:p2"].lead, "w1_p1");
+  assert.equal(panes["w1:p6"].lead, "w1_p5");
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("world: two herdorc in one workspace each get only the panes they recorded", () => {
+  const two = {
+    ...snap,
+    panes: [...snap.panes, pane("w1:p7", { label: "herdorc · planning", agent: "claude" }), pane("w1:p8", { label: "jd-judge-b" })],
+    agents: [...snap.agents, agent("w1:p7", "herdorc", "claude")],
+  };
+  const st = { panes: {
+    "w1:p2": { name: "gentle-ai-worker", terminal: "term-w1:p2", lead: "w1_p1" },
+    "w1:p3": { name: "review-risk", terminal: "term-w1:p3", lead: "w1_p1" },
+    "w1:p8": { name: "jd-judge-b", terminal: "term-w1:p8", lead: "w1_p7" },
+  } };
+  const fromSecond = world(two, st, { self: "w1:p6", origin: "w1:p7" });
+  assert.equal(fromSecond.lead.address, "w1:p7");
+  assert.equal(fromSecond.how, "state file");
+  assert.deepEqual(fromSecond.list.filter((r) => r.parent).map((r) => [r.address, r.parent]), [["w1:p8", "w1:p7"]]);
+  const fromFirst = world(two, st, { self: "w1:p6" });
+  assert.equal(fromFirst.lead.address, "w1:p1");
+  assert.deepEqual(fromFirst.list.filter((r) => r.parent).map((r) => [r.address, r.parent]), [["w1:p2", "w1:p1"], ["w1:p3", "w1:p1"]]);
 });

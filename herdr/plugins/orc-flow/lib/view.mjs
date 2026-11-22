@@ -90,7 +90,7 @@ function nodeSegs(k, t, { name, wall, frame, nameW }) {
     [`${mark} `, t[st.color]],
     [middle(name, nameW).padEnd(nameW), k.status === "shell" ? t.dim : t.bold],
     ["  "],
-    [(k.agent ?? "—").padEnd(9), t.dim],
+    [middle(k.agent ?? "—", 12).padEnd(13), t.dim],
     [middle(model ?? (k.status === "shell" ? "" : "model ?"), 16).padEnd(17), model ? t[k.color] ?? "" : t.dim],
     [k.guessed ? "~ " : "  ", t.ansi3],
     [st.word.padEnd(10), t[st.color]],
@@ -173,13 +173,14 @@ export function render(m, ui) {
     for (const x of recent) body.push([[`   ${x.t ? clock(x.t) : "        "}  `, t.dim], [toolLine(x), x.name === "Send" ? t.ansi2 : ""]]);
   }
   const events = (m.events ?? []).slice().reverse();
-  const room = rows - lines.length - body.length - 3;
-  if (room > 1) {
+  // Rows left for messages: all but the footer, what is drawn, and the two header lines.
+  const room = rows - 1 - lines.length - body.length - 2;
+  if (room >= 1) {
     body.push([[""]]);
     body.push([[" Messages", t.bold], ["  (prompts and handoffs ↓, answers read back ↑, delegations)", t.dim]]);
     if (!events.length) body.push([["   none yet", t.dim]]);
     const name = (key) => m.names?.get(key) ?? key;
-    for (const e of events.slice(0, Math.max(1, room - 2))) {
+    for (const e of events.slice(0, room)) {
       const arrow = e.kind === "reply" ? " ⇠ " : " → ";
       const word = e.kind === "reply" ? "answer read" : e.kind === "message" ? "message" : e.kind;
       const [a, b] = e.kind === "reply" ? [e.to, e.from] : [e.from, e.to];

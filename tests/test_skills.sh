@@ -33,5 +33,11 @@ check "old generated copies ignored, unrelated skills ignored" "echo '$S' | j 'n
 check "--json lists every skill once per copy, winner marked" "echo '$S' | j 'r=[x for x in d[\"skills\"] if x[\"name\"]==\"testing\"]; assert [(x[\"scope\"],x[\"used\"]) for x in r]==[(\"project\",True),(\"user\",False),(\"orchestrator\",False)], r; assert any(x[\"name\"]==\"unrelated\" and x[\"used\"] for x in d[\"skills\"])'"
 check "text output names the winner" "$ORC skills | grep -q -- '- testing: uses project'"
 
+# the home folder is not a project: a terminal that starts there sees user skills
+H=$(cd "$HOME" && $ORC skills --json)
+check "cwd = HOME: ~/.claude/skills counts as user, not project" "echo '$H' | j 'r=[x for x in d[\"skills\"] if x[\"name\"]==\"consensus\"]; assert r and all(x[\"scope\"]!=\"project\" for x in r), r'"
+ln -s "$T/nowhere" "$T/proj/.claude/skills/broken"; mkdir -p "$T/proj/.claude/skills/odd/SKILL.md"
+check "broken links and SKILL.md folders are skipped" "$ORC skills --json | j 'assert all(\"broken\" not in x[\"path\"] and \"/odd/\" not in x[\"path\"] for x in d[\"skills\"])'"
+
 echo "skills: pass=$pass fail=$fail"
 [ "$fail" = 0 ]

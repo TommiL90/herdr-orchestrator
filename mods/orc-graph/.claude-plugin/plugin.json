@@ -1,6 +1,18 @@
 {
   "name": "orc-graph",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "description": "Claude Code only: a live graph of the hcorc/herdorc orchestrator's role panes and subagents, with the work passing between them.",
-  "types": "./types/index.d.ts"
+  "author": {
+    "name": "herdr-orchestrators"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "openPane": {
+      "type": "boolean",
+      "title": "Open the Agents pane by itself",
+      "description": "Open the Agents pane when an hcorc/herdorc session starts. Off: it opens with /orc-graph.",
+      "default": false
+    }
+  }
 }

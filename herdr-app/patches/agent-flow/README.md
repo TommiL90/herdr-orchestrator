@@ -14,12 +14,19 @@ shows the pane but not the message that started it.
 
 `orc-handoff.patch` changes `mods/agent-flow/scan.cjs`:
 
-- A command `orc.py [--as <agent>] ensure <role> [--name <pane>] ... --handoff <file>`
-  counts as a message to the pane named by `--name`, or to `<role>` without it.
-- `ensure` without `--handoff` only opens the pane, so it doesn't count.
+- Commands are read as shell words (quotes, `;`, `&&`, `|`, backslash-newline
+  continuations, `#` comments, `bash -c '...'`), so an option's value is never taken for a
+  pane: `hc send --if idle <pane>` counts as a message to `<pane>`.
+- A command `orc.py [--as <agent>] ensure <role> [--name <pane>] --launch <cli> --handoff <file>`
+  (`--prompt-file` is the same option, and options may come before `<role>`)
+  counts as a message once ensure's JSON answer confirms delivery with
+  `prompt_delivered_at_launch` or `prompt_sent`. The answer names the pane
+  that received it, including any suffix chosen by orc.py.
+- `ensure` without `--launch` starts nothing, and without `--handoff` it only
+  opens the pane, so neither counts.
 - As with `hc send`, only the pane name leaves the scan, never the handoff.
-- `CACHE_VERSION` goes from 2 to 3, so transcripts read before the patch are
-  read again.
+- `CACHE_VERSION` goes from 2 to 7, so transcripts read before the patch (or
+  with an earlier version of it) are read again.
 
 `orc-handoff-test.patch` adds a test of these rules to `test/scan.test.js`.
 Only an agent-flow checkout needs it; the installed mod has no tests.

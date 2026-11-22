@@ -97,39 +97,98 @@ export type Wait = {
   hasTimeout: boolean
 }
 
-function timeoutValue(tokens: readonly string[], from: number): number | undefined {
-  for (let i = from; i < tokens.length; i++) {
-    const t = tokens[i] ?? ''
-    const raw = t === '--timeout' ? tokens[i + 1] : t.startsWith('--timeout=') ? t.slice(10) : undefined
+// shellCommands and program are copies of orc-graph's (hooks/graph.ts): change both.
+/**
+ * Shell words per simple command: quotes and escapes honoured, `; & | ( )` and
+ * newlines split commands, backslash-newline continues one.
+ */
+export function shellCommands(command: string): string[][] {
+  command = command.replace(/\\\r?\n/g, ' ')
+  const cmds: string[][] = []
+  let words: string[] = []
+  let word = ''
+  let inWord = false
+  let quote: '"' | "'" | null = null
+  const endWord = () => {
+    if (inWord) words.push(word)
+    word = ''
+    inWord = false
+  }
+  const endCmd = () => {
+    endWord()
+    if (words.length) cmds.push(words)
+    words = []
+  }
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i] ?? ''
+    if (quote) {
+      if (c === quote) quote = null
+      else if (c === '\\' && quote === '"' && i + 1 < command.length) word += command[++i] ?? ''
+      else word += c
+      continue
+    }
+    if (c === '#' && !inWord) { // a comment runs to the end of the line; the newline still ends the command
+      while (i + 1 < command.length && command[i + 1] !== '\n') i++
+      continue
+    }
+    if (c === '"' || c === "'") { quote = c; inWord = true; continue }
+    if (c === '\\' && i + 1 < command.length) { word += command[++i] ?? ''; inWord = true; continue }
+    if (';&|()\n'.includes(c)) { endCmd(); continue } // before the whitespace test: \n ends a command
+    if (/\s/.test(c)) { endWord(); continue }
+    word += c
+    inWord = true
+  }
+  endCmd()
+  return cmds
+}
+
+const WRAPPERS = new Set(['rtk', 'command', 'exec', 'env', 'nohup', 'time'])
+
+/** The words of a simple command from its program on: env assignments and wrappers dropped. */
+function program(words: readonly string[]): string[] {
+  let i = 0
+  while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i] ?? '') || WRAPPERS.has(words[i] ?? ''))) i++
+  return words.slice(i)
+}
+
+function timeoutValue(words: readonly string[]): number | undefined {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] ?? ''
+    const raw = w === '--timeout' ? words[i + 1] : w.startsWith('--timeout=') ? w.slice(10) : undefined
     if (raw === undefined) continue
-    const n = Number(raw.replace(/^["']|["']$/g, ''))
+    const n = Number(raw)
     if (Number.isFinite(n) && n > 0) return n
   }
   return undefined
 }
 
+/** herdr's global options, before its subcommand. */
+function dropHerdrGlobals(words: readonly string[]): string[] {
+  let i = 1
+  while (i < words.length && /^--(session|machine|remote)(=|$)/.test(words[i] ?? '')) i += (words[i] ?? '').includes('=') ? 1 : 2
+  return [words[0] ?? '', ...words.slice(i)]
+}
+
 /**
- * The longest hc/herdr wait in a Bash command: `hc wait` takes --timeout in
- * seconds, herdr's waits (`agent wait`, `agent prompt --wait`, `pane
- * wait-output`) in milliseconds. Without --timeout, a foreground wait is
- * bounded by the Bash tool's own timeout and a background one by nothing.
+ * The longest hc/herdr wait in a Bash command, read per simple command as shell
+ * words (a quoted "wait" in a message is no wait, and a --timeout belongs to its
+ * own command): `hc wait` and `hc send --wait` take --timeout in seconds,
+ * herdr's waits (`agent wait`, `agent prompt --wait`, `pane wait-output`) in
+ * milliseconds. Without --timeout, a foreground wait is bounded by the Bash
+ * tool's own timeout and a background one by nothing.
  */
 export function parseWait(command: string, runInBackground: boolean, bashTimeoutMs?: number): Wait | undefined {
-  const tokens = command.split(/[\s;&|()]+/).filter(Boolean)
   let found: Wait | undefined
-  for (let i = 0; i < tokens.length; i++) {
-    const prog = (tokens[i] ?? '').split('/').pop()
+  for (const raw of shellCommands(command)) {
+    let w = program(raw)
+    const prog = (w[0] ?? '').split('/').pop()
+    if (prog === 'herdr') w = dropHerdrGlobals(w)
     let tool: Wait['tool'] | undefined
-    let end = tokens.length
-    for (let j = i + 1; j < tokens.length; j++) {
-      const p = (tokens[j] ?? '').split('/').pop()
-      if (p === 'hc' || p === 'herdr' || p === 'herdr-app') { end = j; break }
-    }
-    const args = tokens.slice(i + 1, end)
-    if (prog === 'hc' && args[0] === 'wait') tool = 'hc'
-    if (prog === 'herdr' && args.some(a => a === 'wait' || a === '--wait' || a === 'wait-output')) tool = 'herdr'
+    if (prog === 'hc' && (w[1] === 'wait' || (w[1] === 'send' && w.includes('--wait')))) tool = 'hc'
+    if (prog === 'herdr' && ((w[1] === 'agent' && w[2] === 'wait') || (w[1] === 'pane' && w[2] === 'wait-output')
+      || (w[1] === 'agent' && w[2] === 'prompt' && w.includes('--wait')))) tool = 'herdr'
     if (!tool) continue
-    const value = timeoutValue(args, 0)
+    const value = timeoutValue(w)
     const ms = value !== undefined
       ? (tool === 'hc' ? value * 1000 : value)
       : runInBackground ? Infinity : (bashTimeoutMs ?? 120_000)
@@ -146,10 +205,12 @@ export function suggestedTimeout(tool: Wait['tool'], ttl: Ttl): string {
 }
 
 /** orc.py's phase file name for this orchestrator (shared/bin/orc.py _phase_file). */
-export function phaseFile(home: string, agent: string, ids: { hcTerminal?: string; herdrSession?: string; herdrPane?: string }): string {
+export function phaseFile(home: string, agent: string, ids: { hcTerminal?: string; herdrSession?: string; herdrSocket?: string; herdrPane?: string }): string {
+  // herdr's session as orc_state.herdr_session(): HERDR_SESSION, else the socket path, else default.
+  const session = ids.herdrSession || /[\\/]sessions[\\/]([^\\/]+)[\\/]herdr\.sock$/.exec(ids.herdrSocket ?? '')?.[1] || 'default'
   const me = agent === 'hcorc'
     ? ids.hcTerminal
-    : `${ids.herdrSession || 'default'}-${ids.herdrPane || 'none'}`
+    : `${session}-${ids.herdrPane || 'none'}`
   const safe = (me || 'none').replace(/[^A-Za-z0-9_.-]/g, '_')
   return `${home}/.local/state/orc/phase-${agent}-${safe}.json`
 }

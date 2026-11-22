@@ -33,10 +33,10 @@ multiplexer. See `LICENSE`.
 
 ## Install
 
-Needs herdr 0.9.5 or newer and Node.js 22.5 or newer on `PATH`.
+Needs herdr 0.9.5 or newer and Node.js 22.13 or newer on `PATH`.
 
 ```sh
-herdr plugin link /path/to/herdr-orchestrators/herdr/plugins/orc-flow
+herdr plugin link /path/to/herdr-orchestrator/herdr/plugins/orc-flow
 ```
 
 Then run the `setup-keys` action once to bind `prefix+shift+z`:
@@ -77,9 +77,9 @@ All of it is read; the plugin never sends anything to a pane.
   paired with its transcript by id. A pane without that field (no herdr
   integration for its CLI) is matched by CLI and folder, and the graph marks
   the guess with `~`.
-- **Which panes are herdorc's**: herdorc's state file,
-  `~/.local/state/orc/herdorc-<session>-<workspace>.json`, written by
-  `shared/bin/orc.py`. A recorded pane counts while its label and terminal
+- **Which panes are herdorc's**: herdorc's state files, one per lead pane,
+  `~/.local/state/orc/herdorc-<session>-<workspace>.pane-<lead>.json`, written
+  by `shared/bin/orc.py`. Every lead's panes in the workspace are shown. A recorded pane counts while its label and terminal
   still match, as in `orc_state.herdr_owned()`. These panes are drawn as the
   lead's children.
 - **Which pane is herdorc**: herdr has no parent link, so in this order: the
@@ -92,18 +92,23 @@ All of it is read; the plugin never sends anything to a pane.
   and Oh My Pi / pi session files. It returns tool names, short hints and
   message targets, never prompts or tool output. It reads only what was
   appended since the last scan; the offsets are cached in
-  `$TMPDIR/herdr-orc-flow/`.
+  `$TMPDIR/herdr-orc-flow-<uid>/`, one file per workspace.
 
 A message is any of these in a pane's tool calls:
 
 | Counts as | Command |
 |---|---|
 | message to `<target>` | `herdr agent prompt <target> …`, `herdr pane send-text <target> …` |
-| message to the role pane | `orc.py ensure <role> [--name <pane>] … --handoff <file>` |
-| answer read back from `<target>` | `herdr agent read <target>`, `herdr pane read <target>`, reading `…/reports/<pane-name>-<task>.md` |
+| message to the role pane | `orc.py ensure <role> [--name <pane>] --launch <cli> … --handoff <file>` (or `--prompt-file`) |
+| answer read back from `<target>` | `herdr agent read <target>`, `herdr pane read <target>`, reading `…/orc/reports/<pane-name>-<task>.md` (a read tool, or `cat`, `head`, `sed` and the like) |
 | message (hcorc forms) | `hc send <target>`, `<hc from="…">` tags, Claude Code's `SendMessage` |
 
-A target can be a pane id, a pane label or an agent name.
+A target can be a pane id, a pane label or an agent name. Commands are read as
+shell words (quotes, `;`, `&&`, `|`, backslash-newline continuations,
+`bash -c '…'`, a Codex script's strings), so an option's value (`--timeout
+270000`) is never taken for a target. When a role pane and an internal
+subagent share a name, messages go to the pane and delegations to the
+subagent.
 
 ## Changes from agent-flow
 

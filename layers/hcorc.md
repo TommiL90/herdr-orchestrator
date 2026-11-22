@@ -12,6 +12,10 @@ layer's background runner", it means the sections below.
 - `{{ORC}}` is this orchestrator's helper (role lookup, role panes, phase).
 - **Not `herdr`.** That binary and the `herdr` skill belong to the herdr
   terminal multiplexer, which the `herdorc` agent drives. Never use them here.
+<!-- if:hooks -->
+  The guard asks the user before a destructive `herdr` command (one it would
+  block for herdorc); other `herdr` commands run.
+<!-- endif -->
 - Version-matched manuals: `hc --skill`, `herdr-app --skill`,
   `hc <command> --help`, `herdr-app commands`. Check them instead of guessing.
 
@@ -113,6 +117,8 @@ through a paste:
    `Write your full result to {{REPORTS}}/<pane-name>-<task-slug>.md, then run: hc send <your $HC_TERMINAL_ID, expanded> "<one-line verdict> <report path>". If you are blocked or stuck, send that instead.`
 2. Send: `hc send --if idle <name> "<message>"` where the message is:
    `If you have not read your role file in this session, read {{ROLES_ROOT}}/<role>.md first and follow it; otherwise ignore this line. Then read and execute {{REPORTS}}/handoffs/<file>.md.`
+   For a pane whose status is `done`, drop `--if idle` (`--if` takes only
+   `idle` or `working`, so it would refuse that pane).
    The role line is conditional on purpose: an agent that already holds its
    role does not re-read it for every task, and one that was restarted or
    compacted does.

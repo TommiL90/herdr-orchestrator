@@ -76,3 +76,13 @@ test("setup-keys: one block, idempotent, removable, never steals a key", () => {
   assert.match(apply(taken, "setup"), /already bound elsewhere[\s\S]*# key = ""/);
   assert.ok(!bound(`# zoom = "${KEY}"\n`));
 });
+
+test("the message log fills the rows down to the footer, and a long CLI name keeps its gap", () => {
+  const m = model();
+  m.events = Array.from({ length: 40 }, (_, i) => ({ t: NOW - i * 1000, from: "w1:p1", to: "w1:p2", kind: "message" }));
+  m.kids = m.kids.map((k, i) => (i === 0 ? { ...k, agent: "cursor-agent" } : k));
+  const { lines } = render(m, { cols: 120, rows: 30, sel: null, frame: 0, wall: NOW, detail: false, color: false });
+  assert.equal(lines.length, 30);
+  assert.match(lines.at(-2), /herdorc → gentle-ai-worker {2}message/, "the row above the footer is a message, not a blank");
+  assert.match(lines.join("\n"), /cursor-agent +gpt-5\.1-codex/);
+});

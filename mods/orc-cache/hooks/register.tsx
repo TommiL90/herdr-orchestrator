@@ -88,6 +88,7 @@ async function activate($: EngineInterface, agent: string | null): Promise<void>
     ? phaseFile((await $.env.get('HOME')) ?? '', agent, {
         hcTerminal: await $.env.get('HC_TERMINAL_ID'),
         herdrSession: await $.env.get('HERDR_SESSION'),
+        herdrSocket: await $.env.get('HERDR_SOCKET_PATH'),
         herdrPane: await $.env.get('HERDR_PANE_ID'),
       })
     : undefined
@@ -104,11 +105,27 @@ async function activate($: EngineInterface, agent: string | null): Promise<void>
   }
 }
 
-/** `claude --agent hcorc` names the agent on classic hook events too; a hot reload sees no session start. */
+/**
+ * `claude --agent hcorc` names the agent on classic hook events too. The agent
+ * atom outlives a hot reload while the timer (a module value) does not, so a
+ * known agent without a running timer is started again.
+ */
 async function fromClassic($: EngineInterface, e: { agent_type?: string; agent_id?: string }): Promise<void> {
-  if (e.agent_id !== undefined || (await read($, agentAtom)) !== null) return
+  if (e.agent_id !== undefined) return
+  const known = await read($, agentAtom)
+  if (known !== null) {
+    if (!cfg.timer) await activate($, known)
+    return
+  }
   const agent = agentOf(e.agent_type)
   if (agent) await activate($, agent)
+}
+
+/** After a hot reload with no event yet: start the timer again for a known agent. */
+async function resume($: EngineInterface): Promise<void> {
+  if (cfg.timer) return
+  const known = await read($, agentAtom)
+  if (known !== null || cfg.opt.everywhere === true) await activate($, known)
 }
 
 export const register: Register = (on, options) => {
@@ -134,7 +151,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') {
+    if (e.reason === 'clear' || e.reason === 'resume') {
       await update($, last, () => null)
       await update($, prev, () => null)
       await update($, miss, () => null)
@@ -145,6 +162,7 @@ export const register: Register = (on, options) => {
   // One model request of the main loop: its usage is the cache's report.
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined || !(await isShown($))) return yield* next(e)
+    await resume($)
     const startedAt = await $.clock.now()
     const result = yield* next(e)
     const u = result.usage
@@ -190,6 +208,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || !(await isShown($))) return next(e)
+    await resume($)
     const s = await read($, last)
     const currentPhase = await read($, phase)
     if (!s && !currentPhase) return next(e)

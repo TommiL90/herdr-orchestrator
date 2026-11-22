@@ -67,7 +67,7 @@ check "guard blocks closing a foreign pane" "[ \"\$(g 'herdr pane close $FOREIGN
 check "guard blocks closing the caller pane" "[ \"\$(g 'herdr pane close w1:p1')\" = 2 ]"
 
 # 6b. ownership is verified against the live pane, not just recorded
-STATE=~/.local/state/orc/herdorc-$SESSION-w1.json
+STATE=~/.local/state/orc/herdorc-$SESSION-w1.pane-w1_p1.json  # one file per lead pane (HERDR_PANE_ID)
 check "state records terminal ids" "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"panes\"] and all(v.get(\"terminal\") for v in d[\"panes\"].values()), d' $STATE"
 VTAB=$($ORC role gentle-ai-verify | j 'print(d["panes"][0]["tab"])')
 check "guard allows closing my tab" "[ \"\$(g 'herdr tab close $VTAB')\" = 0 ]"

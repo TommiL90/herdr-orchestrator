@@ -28,7 +28,15 @@ test('waits are read in each tool own unit, unbounded ones as Infinity', async (
   expect(parseWait('hc wait --children any', false, 300_000)?.ms).toBe(300_000)
   expect(parseWait('rtk hc ls && hc wait x --timeout 100; hc wait y --timeout 900', false)?.ms).toBe(900_000)
   expect(parseWait('hc ls --json', false)).toBeUndefined()
+  expect(parseWait('echo x # hc wait y --timeout 900', false)).toBeUndefined()
+  expect(parseWait('echo x # note\nhc wait y --timeout 900', false)?.ms).toBe(900_000)
   expect(parseWait('herdr pane list', false)).toBeUndefined()
+  // A quoted "wait" is a message, not a wait; a --timeout belongs to its own command.
+  expect(parseWait('herdr agent prompt worker "please wait for tests"', true)).toBeUndefined()
+  expect(parseWait('git commit -m "fix hc wait timeout"', true)).toBeUndefined()
+  expect(parseWait('hc wait x && echo --timeout 10', true)?.ms).toBe(Infinity)
+  expect(parseWait('hc send --wait t7 "go" --timeout 600', false)?.ms).toBe(600_000)
+  expect(parseWait('cd /r\nherdr --session orc agent wait w --timeout 900000', false)?.ms).toBe(900_000)
   expect(suggestedTimeout('hc', '5m')).toBe('--timeout 270')
   expect(suggestedTimeout('herdr', '5m')).toBe('--timeout 270000')
 })
@@ -56,6 +64,8 @@ test('the phase file matches orc.py', async () => {
   expect(phaseFile('/h', 'herdorc', { herdrSession: 'orc test', herdrPane: 'w1:p1' }))
     .toBe('/h/.local/state/orc/phase-herdorc-orc_test-w1_p1.json')
   expect(phaseFile('/h', 'herdorc', {})).toBe('/h/.local/state/orc/phase-herdorc-default-none.json')
+  expect(phaseFile('/h', 'herdorc', { herdrSocket: '/x/herdr/sessions/review/herdr.sock', herdrPane: 'w1:p1' }))
+    .toBe('/h/.local/state/orc/phase-herdorc-review-w1_p1.json')
 })
 
 const engine = (on: Parameters<TestBody>[1], agent: string) => {

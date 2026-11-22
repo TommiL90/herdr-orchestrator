@@ -103,47 +103,79 @@ def source(m):
 
 # ------------------------------------------------------------------ copied mods
 def install_copy(name, m, hp, force, entry):
+    """Build (copy, patch, mark) and check the mod in a staging folder first; only a
+    build that passed moves the user's own mod aside and takes its place."""
     dst = hp / "mods" / name
     built = I.dist_path(dst)
-    mine = dst.is_symlink() and I.ours(dst)
-    if I.present(dst) and not mine:
-        if not force:
-            print(f"[{name}] not installed: {dst} exists and was not written by install.py (pass --force)")
-            return False
-        aside = hp / f"{name}.before-orc"
-        if aside.is_dir() and not aside.is_symlink():
-            shutil.rmtree(aside)
-        elif I.present(aside):
-            aside.unlink()
-        dst.rename(aside)
-        print(f"[{name}] moved the existing {dst} to {aside}")
+    previous = built.with_name(f".{name}.orc-previous")
+    aside = hp / f"{name}.before-orc"
+    theirs = I.present(dst) and not (dst.is_symlink() and I.ours(dst))
+    if theirs and not force:
+        print(f"[{name}] not installed: {dst} exists and was not written by install.py (pass --force)")
+        return False
+    if theirs and (I.present(aside) or aside.is_symlink()):
+        print(f"[{name}] not installed: {aside} already holds an earlier {name}; move one of them away first")
+        return False
     src = source(m) / m["copy"]
     if not src.is_dir():
         print(f"[{name}] not installed: {m['repo']}@{m['ref'][:7]} has no {m['copy']}")
         return False
-    tmp = built.with_name(built.name + ".orc-tmp")
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, tmp, symlinks=True)
-    if m.get("patch"):
-        # The patches name files as a/mods/<name>/<file>, relative to the Herdr home.
-        r = subprocess.run(["patch", "-p3", "-s", "-d", str(tmp), "-i", str(ROOT / m["patch"])],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            shutil.rmtree(tmp, ignore_errors=True)
-            print(f"[{name}] not installed: {m['patch']} does not apply:\n{(r.stdout + r.stderr).strip()}")
+    if I.present(previous):
+        if I.present(built):
+            print(f"[{name}] not installed: {previous} holds a build from an interrupted update")
             return False
-        for orig in tmp.rglob("*.orig"):
-            orig.unlink()
-    (tmp / MARK).write_text(json.dumps({"repo": m["repo"], "ref": m["ref"]}) + "\n")
-    shutil.rmtree(built, ignore_errors=True)
-    tmp.rename(built)
-    if not I.linked(dst, built):
-        I.link(dst, built)
-    check = I.herdr_app("check", str(dst))
-    if check is not None and check.returncode != 0:
-        print(f"[{name}] herdr-app check failed:\n{(check.stdout + check.stderr).strip()}")
-        return False
+        previous.rename(built)
+    stage = built.parent / f".{name}.orc-stage"
+    tmp = stage / name  # the folder keeps the mod's name, as Herdr and its check expect
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True)
+    try:
+        shutil.copytree(src, tmp, symlinks=True)
+        if m.get("patch"):
+            # The patches name files as a/mods/<name>/<file>, relative to the Herdr home.
+            r = subprocess.run(["patch", "-p3", "-s", "-d", str(tmp), "-i", str(ROOT / m["patch"])],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"[{name}] not installed: {m['patch']} does not apply:\n{(r.stdout + r.stderr).strip()}")
+                return False
+            for orig in tmp.rglob("*.orig"):
+                orig.unlink()
+        (tmp / MARK).write_text(json.dumps({"repo": m["repo"], "ref": m["ref"]}) + "\n")
+        check = I.herdr_app("check", str(tmp))
+        if check is not None and check.returncode != 0:
+            print(f"[{name}] not installed: herdr-app check failed:\n{(check.stdout + check.stderr).strip()}")
+            return False
+        if theirs:  # nothing of the user's was touched before this point
+            dst.rename(aside)
+        saved = published = False
+        try:
+            if I.present(built):
+                if built.is_symlink() or not built.is_dir():
+                    raise OSError(f"{built} is not a build directory")
+                built.rename(previous)
+                saved = True
+            tmp.rename(built)
+            published = True
+            if not I.linked(dst, built):
+                I.link(dst, built)
+        except OSError as e:
+            try:
+                if published:
+                    shutil.rmtree(built)
+                if saved:
+                    previous.rename(built)
+            finally:
+                if theirs and not I.present(dst):
+                    aside.rename(dst)
+            print(f"[{name}] not installed: could not publish the build ({e})"
+                  + (f"; {dst} is back in place" if theirs and I.present(dst) else ""))
+            return False
+        if saved:
+            shutil.rmtree(previous, ignore_errors=True)
+        if theirs:
+            print(f"[{name}] moved the existing {dst} to {aside}")
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
     print(f"[{name}] {m['repo']}@{m['ref'][:7]}" + (" (patched)" if m.get("patch") else "")
           + f": {dst} links to {built}" + ("; herdr-app check passed" if check is not None else ""))
     entry["files"] = sorted(set(entry.get("files", [])) | {str(dst)})
@@ -195,6 +227,8 @@ def add_keys(name, keys, hp, entry):
         elif g[key] != value:
             taken.append(key)
             continue
+        elif key not in entry.get("keys", {}):
+            continue  # the user bound it to the same action already: theirs, never removed by us
         entry.setdefault("keys", {})[key] = value
     if added:
         backup = path.with_name(path.name + ".before-orc-extras")
@@ -303,6 +337,11 @@ def selection(only):
 
 
 def install(names, dry, force):
+    with I.manifest_lock():  # all extras share one manifest entry: no other run may save it meanwhile
+        return _install(names, dry, force)
+
+
+def _install(names, dry, force):
     hp = I.herdr_home()
     if not (hp / "layouts").is_dir():
         print(f"[extras] skipped: no Herdr app home at {hp} (open Herdr once, or set HERDR_APP_HOME)")
@@ -342,6 +381,11 @@ def install(names, dry, force):
 
 
 def uninstall(names, dry, explicit):
+    with I.manifest_lock():
+        return _uninstall(names, dry, explicit)
+
+
+def _uninstall(names, dry, explicit):
     hp = I.herdr_home()
     manifest = I.load_manifest()
     key = manifest_key(hp)

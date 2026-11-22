@@ -26,12 +26,15 @@ const SUB_TAIL = 2 * 1024 * 1024; // whole, for almost all: counts stay exact
 const MAX_SUBS = 12;
 const MAX_OPEN = 64; // tool calls still waiting for a result; interrupted ones never get one
 const QUIET_MS = 3 * 60 * 1000; // an unfinished subagent silent this long is reported stale
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 4; // bump when what is read from a transcript changes
 
 let cache, used, warnings, now; // set by scan(): one scan's state
 
 const claudeRoot = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
-const cacheFile = () => process.env.ORC_FLOW_CACHE || path.join(os.tmpdir(), "herdr-orc-flow", "scan-cache.json");
+// Per user (a shared /tmp on Linux) and per workspace (two graphs keep different files).
+const userDir = () => path.join(os.tmpdir(), `herdr-orc-flow-${os.userInfo().uid}`);
+const cacheFile = () => process.env.ORC_FLOW_CACHE
+  || path.join(userDir(), `scan-cache-${String(process.env.ORC_FLOW_WORKSPACE || process.env.HERDR_WORKSPACE_ID || "all").replace(/[^\w.-]/g, "_")}.json`);
 
 function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
@@ -55,7 +58,7 @@ function saveCache() {
   for (const [id, f] of Object.entries(cache.paths)) if (!used.has(f)) delete cache.paths[id];
   const file = cacheFile();
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(cache));
     fs.renameSync(tmp, file);
@@ -129,50 +132,142 @@ function hint(name, input = {}) {
   return "";
 }
 
-// A command word, after a separator or a path, optionally quoted: `herdr`, `/usr/bin/herdr`.
-const WORD = (w) => `(?:^|[\\s;&|/\\\\"'(\`])${w}(?:\\.exe)?["']?`;
-// herdr's global options that may come before the subcommand.
-const HERDR_GLOBAL = `(?:\\s+--(?:session|machine|remote)[\\s=]["']?[\\w.@:-]+["']?)*`;
-// Options before a target, with or without a value we can't tell apart: skipped as words.
-const FLAGS = `(?:--?[a-z][\\w-]*(?:=\\S+)?\\s+)*`;
-const NAME = `["']?([\\w:./-]+)`;
-
-// herdorc's messages: `herdr agent prompt <target> <text>` (the layer's dispatch) and
-// `herdr pane send-text <pane> <text>`. hcorc's: `hc send <target>`.
-const HERDR_SEND = new RegExp(`${WORD("herdr")}${HERDR_GLOBAL}\\s+(?:agent\\s+prompt|pane\\s+send-text)\\s+${FLAGS}${NAME}`, "gi");
-const HC_SEND = new RegExp(`${WORD("hc")}\\s+send\\s+${FLAGS}${NAME}`, "gi");
-// The lead reading a role's answer back: `herdr agent read <target>` / `herdr pane read <pane>`.
-const HERDR_READ = new RegExp(`${WORD("herdr")}${HERDR_GLOBAL}\\s+(?:agent|pane)\\s+read\\s+${FLAGS}${NAME}`, "gi");
-
-// orc.py (herdr-orchestrators) opens a role pane and hands it its task in one call:
-// `orc.py [--as <agent>] ensure <role> [--name <pane>] ... --handoff <file>`. The pane is
-// named after `--name`, else the role. Without `--handoff` it only opens the pane.
-const ORC_ENSURE = /(?:^|[\s;&|/\\"'])orc(?:\.py)?["']?\s+(?:--as[\s=]\S+\s+)?ensure\s+["']?([\w.-]+)([^;&|\n]*)/gi;
-
-// Everyone a tool call is talking to: `herdr agent prompt` / `herdr pane send-text`,
-// `hc send` from a shell, an orc.py handoff, or Claude Code's SendMessage. A shell command
-// may send several (a loop, `&&`), so this is a list. Only targets leave, never the message.
-function targets(name, input = {}) {
-  if (name === "SendMessage" && input.to) return [String(input.to)];
-  const cmd = typeof input.command === "string" ? input.command : null;
-  if (!cmd) return [];
+// A shell command as simple commands, each a list of words. It splits at ; & | newlines
+// and parentheses outside quotes, joins backslash-newline continuations and drops quotes.
+// A word holding `$` or a backtick can't be resolved here and becomes null.
+function commands(cmd) {
   const out = [];
-  for (const re of [HERDR_SEND, HC_SEND]) for (const hit of cmd.matchAll(re)) out.push(hit[1]);
-  for (const orc of cmd.matchAll(ORC_ENSURE)) {
-    if (!/\s--handoff[\s=]/.test(orc[2])) continue;
-    out.push(/\s--name[\s=]["']?([\w.-]+)/.exec(orc[2])?.[1] ?? orc[1]);
+  let words = [], word = null, quote = null, dyn = false;
+  const end = () => { if (word !== null) words.push(dyn ? null : word); word = null; dyn = false; };
+  const cut = () => { end(); if (words.length) out.push(words); words = []; };
+  const s = cmd.replace(/\\\r?\n/g, " ");
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      else if (quote === '"' && c === "\\" && i + 1 < s.length) word += s[++i];
+      else { if (quote === '"' && (c === "$" || c === "`")) dyn = true; word += c; }
+    } else if (c === "#" && word === null) { while (i + 1 < s.length && s[i + 1] !== "\n") i++; } // comment: to the end of the line
+    else if (c === "'" || c === '"') { quote = c; word ??= ""; }
+    else if (c === "\\" && i + 1 < s.length) word = (word ?? "") + s[++i];
+    else if (";&|\n()".includes(c)) cut();
+    else if (/\s/.test(c)) end();
+    else { if (c === "$" || c === "`") dyn = true; word = (word ?? "") + c; }
+  }
+  cut();
+  return out;
+}
+
+// Options that take a value in the commands read here (herdr, hc, orc.py); any other
+// option is a bare switch.
+const VALUED = new Set(["--if", "--timeout", "--until", "--lines", "--source", "--format",
+  "--session", "--machine", "--remote", "--as", "--name", "--launch", "--model", "--handoff",
+  "--prompt-file"]);
+// Words before the program: assignments, wrappers and their options.
+const WRAPPER = /^(?:env|command|exec|nohup|time|sudo|rtk|python3?(?:\.\d+)?)$/;
+const base = (w) => (typeof w === "string" ? w.replace(/\\/g, "/").split("/").pop().replace(/\.exe$/i, "") : "");
+const PANE = /^[\w:./-]+$/;
+const pane = (w) => (typeof w === "string" && PANE.test(w) ? w : null);
+
+// Each simple command as its program's name, its positional words and its options.
+// `bash -c '<script>'` is read as its script.
+const SHELL = /^(?:ba|z|da|k)?sh$/;
+function calls(cmd, depth = 0) {
+  return commands(cmd).flatMap((words) => {
+    let i = 0;
+    while (i < words.length && typeof words[i] === "string"
+      && (/^\w+=/.test(words[i]) || WRAPPER.test(base(words[i])) || (i > 0 && words[i].startsWith("-")))) {
+      if (words[i] === "-u") i++; // env -u NAME
+      i++;
+    }
+    const pos = [], opt = {}, args = words.slice(i + 1);
+    for (let j = 0; j < args.length; j++) {
+      const m = typeof args[j] === "string" && /^(--?[a-z][\w-]*)(?:=(.*))?$/is.exec(args[j]);
+      if (!m) pos.push(args[j]);
+      else opt[m[1]] = m[2] !== undefined ? m[2] : VALUED.has(m[1]) ? args[++j] ?? null : true;
+    }
+    const prog = base(words[i]);
+    const script = SHELL.test(prog) && Object.keys(opt).some((o) => /^-[a-z]*c$/.test(o)) ? pos[0] : null;
+    if (typeof script === "string" && depth < 3) return calls(script, depth + 1);
+    return [{ prog, pos, opt }];
+  });
+}
+
+// The commands a script runs are among its string literals: one per line.
+const literals = (src) => [...src.matchAll(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g)]
+  .map((m) => (m[1] ?? m[2] ?? m[3]).replace(/\\(.)/g, "$1")).join("\n");
+
+// Direct sends can be read from the command. An ensure only requests a handoff;
+// its result must confirm delivery and identify the receiving pane.
+function destinations(name, input = {}) {
+  if (name === "SendMessage" && input.to) return [{ to: String(input.to) }];
+  if (typeof input.command !== "string") return [];
+  const out = [];
+  for (const { prog, pos, opt } of calls(input.command)) {
+    let to = null;
+    if (prog === "herdr" && ((pos[0] === "agent" && pos[1] === "prompt") || (pos[0] === "pane" && pos[1] === "send-text"))) to = pane(pos[2]);
+    else if (prog === "hc" && pos[0] === "send") to = pane(pos[1]);
+    else if ((prog === "orc.py" || prog === "orc") && pos[0] === "ensure" && opt["--launch"] && (opt["--handoff"] || opt["--prompt-file"])) {
+      const role = pane(pos[1]);
+      if (role) out.push({ role, name: pane(opt["--name"]) });
+    }
+    if (to) out.push({ to });
   }
   return out;
 }
+const targets = (name, input) => destinations(name, input).map(({ to, name, role }) => to ?? name ?? role);
 const target = (name, input) => targets(name, input)[0] ?? null;
+
+// Tool output may wrap the JSON printed by orc.py with shell runner metadata.
+const resultText = (content) => (typeof content === "string" ? content
+  : Array.isArray(content) ? content.map((b) => (typeof b?.text === "string" ? b.text : "")).join("\n") : "");
+
+function confirmedHandoffs(text, attempts) {
+  const pending = attempts.slice();
+  const delivered = [];
+  for (const [, json] of text.matchAll(/(?:^|\n)[ \t]*(\{(?:[^\r\n]*\}|\r?\n[\s\S]*?\r?\n\}))(?=[ \t]*(?:\r?\n|$))/g)) {
+    let reply;
+    try { reply = JSON.parse(json); } catch { continue; }
+    if (typeof reply?.name !== "string") continue;
+    const i = pending.findIndex(({ role, name }) => name ? reply.name === name
+      : reply.name === role || (reply.name.startsWith(role + "-") && /^\d+$/.test(reply.name.slice(role.length + 1))));
+    if (i < 0) continue;
+    pending.splice(i, 1);
+    if (reply.prompt_sent === true || reply.prompt_delivered_at_launch === true) delivered.push(reply.name);
+  }
+  return delivered;
+}
+
+function finishHandoffs(out, item, text) {
+  const delivered = confirmedHandoffs(text, item.handoffs);
+  for (const to of delivered) out.sends.push({ t: item.t, to });
+  if (delivered.length) {
+    item.name = "Send";
+    item.to ??= delivered[0];
+    item.hint = delivered.join(", ");
+  }
+  delete item.handoffs;
+}
+
+// A role's report: herdorc's handoff names it `<state>/orc/reports/<pane-name>-<task>.md`;
+// the handoffs folder beside it holds the lead's own files.
+const REPORT = /\/orc\/reports\/[^/]+\.md$/;
+const report = (file) => (REPORT.test(file) ? path.basename(file, ".md") : null);
+const READER = new Set(["cat", "head", "tail", "less", "more", "bat", "sed", "nl"]);
 
 // Whose answer a tool call reads: `herdr agent read <x>`, or a role's report file, which
 // herdorc's handoff names `<reports>/<pane-name>-<task>.md` (not the handoff itself).
 function reads(name, input = {}) {
   const out = [];
-  if (typeof input.command === "string") for (const hit of input.command.matchAll(HERDR_READ)) out.push({ from: hit[1] });
+  if (typeof input.command === "string") {
+    for (const { prog, pos } of calls(input.command)) {
+      if (prog === "herdr" && (pos[0] === "agent" || pos[0] === "pane") && pos[1] === "read" && pane(pos[2])) out.push({ from: pos[2] });
+      else if (READER.has(prog)) for (const w of pos) { const r = typeof w === "string" && report(w); if (r) out.push({ file: r }); }
+    }
+  }
   const file = String(input.file_path ?? input.filePath ?? input.path ?? "").replace(/\\/g, "/");
-  if (/^read$/i.test(name) && /\/reports\/[^/]+\.md$/.test(file) && !/\/handoffs\//.test(file)) out.push({ file: path.basename(file, ".md") });
+  const r = /^read$/i.test(name) ? report(file) : null;
+  if (r) out.push({ file: r });
   return out;
 }
 
@@ -183,12 +278,15 @@ function heard(out, text, at) {
 
 function note(out, item, name, input, at) {
   for (const r of reads(name, input)) (out.reads ??= []).push({ t: at, ...r });
-  const to = targets(name, input);
-  if (!to.length) return;
-  item.name = "Send";
-  item.hint = to.join(", ");
-  item.to = to[0];
+  const dest = destinations(name, input);
+  if (!dest.length) return;
+  const to = dest.flatMap(({ to }) => to ? [to] : []);
+  const handoffs = dest.filter(({ role }) => role);
+  item.name = to.length ? "Send" : "Handoff";
+  item.hint = dest.map(({ to, name, role }) => to ?? name ?? role).join(", ");
+  if (to.length) item.to = to[0];
   for (const t of to) out.sends.push({ t: at, to: t });
+  if (handoffs.length) item.handoffs = handoffs;
 }
 
 // A transcript folded so far. `open` holds tool calls waiting for their result and `agents`
@@ -267,6 +365,7 @@ function digest(out, rows) {
       if (typeof c === "string") heard(out, c, at);
       else for (const b of Array.isArray(c) ? c : []) if (b.type === "text") heard(out, b.text, at);
       for (const b of results) {
+        if (open[b.tool_use_id]?.handoffs) finishHandoffs(out, open[b.tool_use_id], b.is_error ? "" : resultText(b.content));
         delete open[b.tool_use_id];
         if (b.tool_use_id in agents) {
           out.recent.push({ t: at, name: "back", hint: agents[b.tool_use_id], back: true });
@@ -283,37 +382,45 @@ function digest(out, rows) {
 // Shell calls come as `function_call` (arguments JSON with `cmd` or `command`) or as a
 // `custom_tool_call` whose input is a script that runs commands: its text is searched whole.
 function digestCodex(out, rows) {
-  const open = out.open;
   for (const r of rows) {
-    const p = r.payload ?? {};
-    const at = Date.parse(r.timestamp ?? "") || 0;
-    if (at) out.lastAt = Math.max(out.lastAt, at);
-    out.seen.rows++;
-    if (r.type === "turn_context" && p.model) out.model = p.model;
-    if (r.type === "event_msg" && p.type === "task_started") { out.tools = 0; out.turnAt = at; }
-    if (r.type === "event_msg" && p.type === "token_count") {
-      const u = p.info?.last_token_usage;
-      if (u) out.ctx = u.input_tokens ?? 0;
-    }
-    if (r.type !== "response_item") continue;
-    if (p.type === "message" && p.role === "user") {
-      for (const b of Array.isArray(p.content) ? p.content : []) if (b.text) heard(out, b.text, at);
-    } else if (p.type === "function_call" || p.type === "custom_tool_call") {
-      let input = {};
-      if (p.type === "function_call") {
-        try { input = JSON.parse(p.arguments ?? "{}"); } catch { /* cut */ }
-        const cmd = input.cmd ?? input.command;
-        input = { ...input, command: Array.isArray(cmd) ? cmd.join(" ") : cmd };
-      } else input = { command: typeof p.input === "string" ? p.input : "" };
-      const name = String(p.name ?? "tool");
-      const item = { t: at, name, hint: hint(name, { ...input, command: input.command?.split("\n")[0] }) };
-      note(out, item, name, input, at);
-      out.tools++;
-      out.recent.push(item);
-      if (p.call_id) open[p.call_id] = item;
-    } else if (/_output$/.test(p.type ?? "")) delete open[p.call_id];
+    try { codexRow(out, r); } catch { out.seen.bad = (out.seen.bad ?? 0) + 1; } // a row in a shape we don't know
   }
   return trim(out);
+}
+
+function codexRow(out, r) {
+  const open = out.open;
+  const p = r?.payload ?? {};
+  const at = Date.parse(r.timestamp ?? "") || 0;
+  if (at) out.lastAt = Math.max(out.lastAt, at);
+  out.seen.rows++;
+  if (r.type === "turn_context" && p.model) out.model = p.model;
+  if (r.type === "event_msg" && p.type === "task_started") { out.tools = 0; out.turnAt = at; }
+  if (r.type === "event_msg" && p.type === "token_count") {
+    const u = p.info?.last_token_usage;
+    if (u) out.ctx = u.input_tokens ?? 0;
+  }
+  if (r.type !== "response_item") return;
+  if (p.type === "message" && p.role === "user") {
+    for (const b of Array.isArray(p.content) ? p.content : []) if (typeof b?.text === "string") heard(out, b.text, at);
+  } else if (p.type === "function_call" || p.type === "custom_tool_call") {
+    let input = {};
+    if (p.type === "function_call") {
+      try { input = JSON.parse(p.arguments ?? "{}") ?? {}; } catch { /* cut */ }
+      const cmd = input.cmd ?? input.command;
+      const argv = Array.isArray(cmd) && SHELL.test(base(cmd[0])) && /^-[a-z]*c$/.test(cmd[1] ?? "") ? cmd.slice(2) : cmd;
+      input = { ...input, command: Array.isArray(argv) ? argv.join(" ") : argv };
+    } else input = { command: typeof p.input === "string" ? literals(p.input) : "" };
+    const name = String(p.name ?? "tool");
+    const item = { t: at, name, hint: hint(name, { ...input, command: input.command?.split("\n")[0] }) };
+    note(out, item, name, input, at);
+    out.tools++;
+    out.recent.push(item);
+    if (p.call_id) open[p.call_id] = item;
+  } else if (/_output$/.test(p.type ?? "")) {
+    if (open[p.call_id]?.handoffs) finishHandoffs(out, open[p.call_id], resultText(p.output));
+    delete open[p.call_id];
+  }
 }
 
 // Where a session's transcript is: under its folder's slug, or else wherever an earlier scan
@@ -399,12 +506,15 @@ function claude(list) {
 const sameDir = (a, b) => norm(a) === norm(b);
 const norm = (p) => String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 
-// node:sqlite needs Node 22; without it these agents still show, only without a model.
+// node:sqlite needs Node 22.13 (22.5-22.12 only behind a flag); without it these agents
+// still show, only without a model, and the graph says why.
 function database(file) {
-  try {
-    const { DatabaseSync } = require("node:sqlite");
-    return new DatabaseSync(file, { readOnly: true });
-  } catch { return null; }
+  let DatabaseSync;
+  try { ({ DatabaseSync } = require("node:sqlite")); } catch {
+    warnings.add(`Node ${process.versions.node} has no node:sqlite (needs 22.13+): Codex and opencode panes show without a model`);
+    return null;
+  }
+  try { return new DatabaseSync(file, { readOnly: true }); } catch (e) { warnings.add(`${path.basename(file)}: ${e.message}`); return null; }
 }
 
 // The latest rows for each asked folder: two terminals in one folder take two sessions.
@@ -421,22 +531,7 @@ function perFolder(rows, folders, dirOf) {
 function digestOpencode(rows) {
   const out = { model: null, ctx: 0, tools: 0, turnAt: 0, lastAt: 0, now: null, recent: [], sends: [], recvs: [], reads: [] };
   for (const r of rows) {
-    out.lastAt = Math.max(out.lastAt, r.time_created);
-    if (r.type === "user") { out.tools = 0; out.turnAt = r.time_created; out.now = null; heard(out, r.data, r.time_created); }
-    if (r.type !== "assistant") continue;
-    let d;
-    try { d = JSON.parse(r.data); } catch { continue; }
-    if (d.model?.id) out.model = d.model.id;
-    for (const b of d.content ?? []) {
-      if (b.type !== "tool") continue;
-      const given = typeof b.state?.input === "object" ? b.state.input ?? {} : {};
-      const name = String(b.name)[0].toUpperCase() + String(b.name).slice(1);
-      const item = { t: b.time?.created ?? r.time_created, name, hint: hint(name, { ...given, file_path: given.filePath ?? given.file_path ?? (/^(read|edit|write)/i.test(name) ? given.path : undefined) }) };
-      note(out, item, name, given, item.t);
-      out.tools++;
-      out.recent.push(item);
-      out.now = /run|stream|pend/.test(b.state?.status ?? "") ? item : null;
-    }
+    try { opencodeRow(out, r); } catch { /* a row in a shape we don't know */ }
   }
   out.now = out.now ? { name: out.now.name, hint: out.now.hint } : null;
   out.recent = out.recent.slice(-24);
@@ -444,6 +539,26 @@ function digestOpencode(rows) {
   out.recvs = out.recvs.slice(-20);
   out.reads = out.reads.slice(-20);
   return out;
+}
+
+function opencodeRow(out, r) {
+  out.lastAt = Math.max(out.lastAt, r.time_created);
+  if (r.type === "user") { out.tools = 0; out.turnAt = r.time_created; out.now = null; heard(out, r.data, r.time_created); }
+  if (r.type !== "assistant") return;
+  let d;
+  try { d = JSON.parse(r.data); } catch { return; }
+  if (d?.model?.id) out.model = d.model.id;
+  for (const b of Array.isArray(d?.content) ? d.content : []) {
+    if (b?.type !== "tool" || !b.name) continue;
+    const given = typeof b.state?.input === "object" ? b.state.input ?? {} : {};
+    const name = String(b.name)[0].toUpperCase() + String(b.name).slice(1);
+    const item = { t: b.time?.created ?? r.time_created, name, hint: hint(name, { ...given, file_path: given.filePath ?? given.file_path ?? (/^(read|edit|write)/i.test(name) ? given.path : undefined) }) };
+    note(out, item, name, given, item.t);
+    if (item.handoffs && typeof b.state?.output === "string") finishHandoffs(out, item, b.state.output);
+    out.tools++;
+    out.recent.push(item);
+    out.now = /run|stream|pend/.test(b.state?.status ?? "") ? item : null;
+  }
 }
 
 // opencode: a root session by herdr's id, else the newest root session in the pane's folder.
@@ -485,7 +600,8 @@ function codex(list) {
   const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const empty = { tools: null, ctx: 0, turnAt: 0, now: null, recent: [], sends: [], recvs: [], reads: [], more: false, subs: [], total: 0 };
   let files = [];
-  try { files = fs.readdirSync(home).filter((n) => /^state_\d+\.sqlite$/.test(n)).sort(); } catch { return []; }
+  try { files = fs.readdirSync(home).filter((n) => /^state_\d+\.sqlite$/.test(n))
+    .sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0])); } catch { return []; }
   const found = [];
   const db = files.length ? database(path.join(home, files[files.length - 1])) : null;
   if (db) {

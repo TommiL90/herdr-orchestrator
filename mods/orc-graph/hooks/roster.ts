@@ -102,12 +102,17 @@ export function parseHc(stdout: string, me: string): Member[] {
 type HerdrPaneRecord = string | { name?: string; terminal?: string }
 type HerdrAgentRow = { pane_id?: string; agent?: string; agent_status?: string; terminal_id?: string }
 
+/** A pane `herdr pane list` shows: its label and its terminal. */
+export type LivePane = { label?: string; terminal?: string }
+
 /**
  * herdorc's recorded panes (orc_state's state file), joined with `herdr agent
- * list` for the CLI and its state. `paneIds`, from `herdr pane list`, drops a
- * recorded pane that is gone; undefined when herdr did not answer.
+ * list` for the CLI and its state. `live`, from `herdr pane list`, keeps a
+ * recorded pane only as orc_state.herdr_owned does: its id exists, its label is
+ * the name orc.py gave it, and its terminal is the one recorded (herdr reuses
+ * ids). Undefined when herdr did not answer.
  */
-export function parseHerdr(agentsStdout: string, stateText: string | undefined, session: string, paneIds?: ReadonlySet<string>): Member[] {
+export function parseHerdr(agentsStdout: string, stateText: string | undefined, session: string, live?: ReadonlyMap<string, LivePane>): Member[] {
   let panes: Record<string, HerdrPaneRecord> = {}
   try {
     panes = (JSON.parse(stateText || '{}') as { panes?: Record<string, HerdrPaneRecord> }).panes ?? {}
@@ -126,9 +131,13 @@ export function parseHerdr(agentsStdout: string, stateText: string | undefined, 
     const name = typeof rec === 'string' ? rec : rec?.name
     const role = roleOf(name ?? '')
     if (!role || !name) continue
-    if (paneIds && !paneIds.has(id)) continue
-    const a = agents.get(id)
     const terminal = typeof rec === 'object' ? rec?.terminal : undefined
+    if (live) {
+      const p = live.get(id)
+      if (!p || (p.label ?? '') !== name) continue
+      if (terminal && p.terminal && p.terminal !== terminal) continue
+    }
+    const a = agents.get(id)
     if (a && terminal && a.terminal_id && a.terminal_id !== terminal) continue // herdr reused the id
     const cli = cliOf(a?.agent)
     out.push({
@@ -140,11 +149,17 @@ export function parseHerdr(agentsStdout: string, stateText: string | undefined, 
   return out.sort(byRole)
 }
 
-export function paneIdsOf(stdout: string): Set<string> | undefined {
+export function livePanes(stdout: string): Map<string, LivePane> | undefined {
   try {
-    const list = (JSON.parse(stdout) as { result?: { panes?: { pane_id?: string; id?: string }[] } }).result?.panes
+    type Row = { pane_id?: string; id?: string; label?: string; terminal_id?: string }
+    const list = (JSON.parse(stdout) as { result?: { panes?: Row[] } }).result?.panes
     if (!Array.isArray(list)) return undefined
-    return new Set(list.map(p => p.pane_id ?? p.id ?? '').filter(Boolean))
+    const out = new Map<string, LivePane>()
+    for (const p of list) {
+      const id = p.pane_id ?? p.id
+      if (id) out.set(id, { label: p.label, terminal: p.terminal_id })
+    }
+    return out
   } catch {
     return undefined
   }
@@ -154,13 +169,26 @@ export function stateDir(home: string): string {
   return `${home}/.local/state/orc`
 }
 
+/** herdr's session, as orc_state.herdr_session(): HERDR_SESSION, else the socket path
+ * (`.../sessions/<name>/herdr.sock`), else the default session. */
+export function herdrSessionOf(session: string | undefined, socket: string | undefined): string {
+  if (session) return session
+  const m = /[\\/]sessions[\\/]([^\\/]+)[\\/]herdr\.sock$/.exec(socket ?? '')
+  return m?.[1] ?? 'default'
+}
+
+/** herdorc's state file for the lead pane `me`, as orc_state.herdorc_state_path(): one per lead. */
+export function herdorcStatePath(home: string, session: string, workspace: string, me: string): string {
+  return `${stateDir(home)}/herdorc-${safe(`${session}-${workspace}`)}.pane-${safe(me)}.json`
+}
+
 /** Where this orchestrator session runs, from the environment. */
 export async function whereAmI($: EngineInterface, agent: Orchestrator): Promise<Where> {
   return {
     agent,
     home: (await $.env.get('HOME')) ?? '',
     me: ((agent === 'hcorc' ? await $.env.get('HC_TERMINAL_ID') : await $.env.get('HERDR_PANE_ID')) ?? ''),
-    herdrSession: (await $.env.get('HERDR_SESSION')) || 'default',
+    herdrSession: herdrSessionOf(await $.env.get('HERDR_SESSION'), await $.env.get('HERDR_SOCKET_PATH')),
     herdrWorkspace: (await $.env.get('HERDR_WORKSPACE_ID')) || undefined,
   }
 }
@@ -187,11 +215,11 @@ export async function pollRoster($: EngineInterface, w: Where): Promise<Member[]
   const panes = await runJson($, ['herdr', 'pane', 'list', '--workspace', w.herdrWorkspace])
   let state: string | undefined
   try {
-    state = await $.fs.read(`${stateDir(w.home)}/herdorc-${safe(`${w.herdrSession}-${w.herdrWorkspace}`)}.json`)
+    state = await $.fs.read(herdorcStatePath(w.home, w.herdrSession, w.herdrWorkspace, w.me))
   } catch {
     state = undefined // no pane recorded yet
   }
-  return parseHerdr(agents, state, w.herdrSession, panes === undefined ? undefined : paneIdsOf(panes))
+  return parseHerdr(agents, state, w.herdrSession, panes === undefined ? undefined : livePanes(panes))
 }
 
 /** A pane name for display: orc.py's tab titles drop the same prefixes. */

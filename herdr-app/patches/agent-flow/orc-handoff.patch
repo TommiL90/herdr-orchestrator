@@ -1,36 +1,162 @@
 --- a/mods/agent-flow/scan.cjs
 +++ b/mods/agent-flow/scan.cjs
-@@ -18,7 +18,7 @@
- const MAX_SUBS = 12;
+@@ -19,5 +19,5 @@
  const MAX_OPEN = 64; // tool calls still waiting for a result; interrupted ones never get one
  const QUIET_MS = 3 * 60 * 1000; // an unfinished subagent silent this long is reported stale
 -const CACHE_VERSION = 2;
-+const CACHE_VERSION = 3; // 3: orc.py handoffs count as sends, so transcripts are read again
++const CACHE_VERSION = 7; // reread transcripts after changing how handoffs are counted
  const MAX_OUT = 6 * 1024 * 1024; // Herdr's exec keeps 8 MiB of output and drops the rest
  const warnings = new Set(); // a private format that changed, named by what's missing
- const CACHE = process.env.AGENT_FLOW_CACHE || path.join(os.tmpdir(), "herdr-agent-flow", "scan-cache.json");
-@@ -121,13 +121,21 @@
-   return "";
+@@ -122,11 +122,111 @@
  }
- 
+
 -// Who a tool call is talking to: `hc send <target>` from a shell, or Claude Code's
 -// SendMessage. Only the target leaves here, never the message.
-+// orc.py (herdr-orchestrators) opens a role pane and hands it its task in one call:
-+// `orc.py [--as <agent>] ensure <role> [--name <pane>] ... --handoff <file>`. The pane is
-+// named after `--name`, else the role. Without `--handoff` it only opens the pane.
-+const ORC_ENSURE = /(?:^|[\s;&|/\\"'])orc(?:\.py)?["']?\s+(?:--as[\s=]\S+\s+)?ensure\s+["']?([\w.-]+)([^;&|\n]*)/i;
-+
-+// Who a tool call is talking to: `hc send <target>` from a shell, an orc.py handoff, or
-+// Claude Code's SendMessage. Only the target leaves here, never the message.
- function target(name, input = {}) {
-   if (name === "SendMessage" && input.to) return String(input.to);
-   if (typeof input.command !== "string") return null;
-   const hit = /(?:^|[\s;&|/\\"'])hc(?:\.exe)?["']?\s+send\s+(?:--?[a-z-]+\s+)*["']?([\w:./-]+)/i.exec(input.command);
+-function target(name, input = {}) {
+-  if (name === "SendMessage" && input.to) return String(input.to);
+-  if (typeof input.command !== "string") return null;
+-  const hit = /(?:^|[\s;&|/\\"'])hc(?:\.exe)?["']?\s+send\s+(?:--?[a-z-]+\s+)*["']?([\w:./-]+)/i.exec(input.command);
 -  return hit ? hit[1] : null;
-+  if (hit) return hit[1];
-+  const orc = ORC_ENSURE.exec(input.command);
-+  if (!orc || !/\s--handoff[\s=]/.test(orc[2])) return null;
-+  return /\s--name[\s=]["']?([\w.-]+)/.exec(orc[2])?.[1] ?? orc[1];
++// A shell command as simple commands, each a list of words. It splits at ; & | newlines
++// and parentheses outside quotes, joins backslash-newline continuations and drops quotes.
++// A word holding `$` or a backtick can't be resolved here and becomes null.
++function commands(cmd) {
++  const out = [];
++  let words = [], word = null, quote = null, dyn = false;
++  const end = () => { if (word !== null) words.push(dyn ? null : word); word = null; dyn = false; };
++  const cut = () => { end(); if (words.length) out.push(words); words = []; };
++  const s = cmd.replace(/\\\r?\n/g, " ");
++  for (let i = 0; i < s.length; i++) {
++    const c = s[i];
++    if (quote) {
++      if (c === quote) quote = null;
++      else if (quote === '"' && c === "\\" && i + 1 < s.length) word += s[++i];
++      else { if (quote === '"' && (c === "$" || c === "`")) dyn = true; word += c; }
++    } else if (c === "#" && word === null) { while (i + 1 < s.length && s[i + 1] !== "\n") i++; } // comment: to the end of the line
++    else if (c === "'" || c === '"') { quote = c; word ??= ""; }
++    else if (c === "\\" && i + 1 < s.length) word = (word ?? "") + s[++i];
++    else if (";&|\n()".includes(c)) cut();
++    else if (/\s/.test(c)) end();
++    else { if (c === "$" || c === "`") dyn = true; word = (word ?? "") + c; }
++  }
++  cut();
++  return out;
++}
++
++// Options that take a value in the commands read here (hc, orc.py); any other option is
++// a bare switch.
++const VALUED = new Set(["--if", "--timeout", "--as", "--name", "--launch", "--model", "--handoff",
++  "--prompt-file"]);
++// Words before the program: assignments, wrappers and their options.
++const WRAPPER = /^(?:env|command|exec|nohup|time|sudo|rtk|python3?(?:\.\d+)?)$/;
++const base = (w) => (typeof w === "string" ? w.replace(/\\/g, "/").split("/").pop().replace(/\.exe$/i, "") : "");
++const PANE = /^[\w:./-]+$/;
++const pane = (w) => (typeof w === "string" && PANE.test(w) ? w : null);
++
++// Each simple command as its program's name, its positional words and its options.
++// `bash -c '<script>'` is read as its script.
++const SHELL = /^(?:ba|z|da|k)?sh$/;
++function calls(cmd, depth = 0) {
++  return commands(cmd).flatMap((words) => {
++    let i = 0;
++    while (i < words.length && typeof words[i] === "string"
++      && (/^\w+=/.test(words[i]) || WRAPPER.test(base(words[i])) || (i > 0 && words[i].startsWith("-")))) {
++      if (words[i] === "-u") i++; // env -u NAME
++      i++;
++    }
++    const pos = [], opt = {}, args = words.slice(i + 1);
++    for (let j = 0; j < args.length; j++) {
++      const m = typeof args[j] === "string" && /^(--?[a-z][\w-]*)(?:=(.*))?$/is.exec(args[j]);
++      if (!m) pos.push(args[j]);
++      else opt[m[1]] = m[2] !== undefined ? m[2] : VALUED.has(m[1]) ? args[++j] ?? null : true;
++    }
++    const prog = base(words[i]);
++    const script = SHELL.test(prog) && Object.keys(opt).some((o) => /^-[a-z]*c$/.test(o)) ? pos[0] : null;
++    if (typeof script === "string" && depth < 3) return calls(script, depth + 1);
++    return [{ prog, pos, opt }];
++  });
++}
++
++// Direct sends can be read from the command. An ensure only requests a handoff;
++// its result must confirm delivery and identify the receiving pane.
++function destinations(name, input = {}) {
++  if (name === "SendMessage" && input.to) return [{ to: String(input.to) }];
++  if (typeof input.command !== "string") return [];
++  const out = [];
++  for (const { prog, pos, opt } of calls(input.command)) {
++    let to = null;
++    if (prog === "hc" && pos[0] === "send") to = pane(pos[1]);
++    else if ((prog === "orc.py" || prog === "orc") && pos[0] === "ensure" && opt["--launch"] && (opt["--handoff"] || opt["--prompt-file"])) {
++      const role = pane(pos[1]);
++      if (role) out.push({ role, name: pane(opt["--name"]) });
++    }
++    if (to) out.push({ to });
++  }
++  return out;
++}
++
++// Tool output may wrap the JSON printed by orc.py with shell runner metadata.
++const resultText = (content) => (typeof content === "string" ? content
++  : Array.isArray(content) ? content.map((b) => (typeof b?.text === "string" ? b.text : "")).join("\n") : "");
++
++function confirmedHandoffs(text, attempts) {
++  const pending = attempts.slice();
++  const delivered = [];
++  for (const [, json] of text.matchAll(/(?:^|\n)[ \t]*(\{(?:[^\r\n]*\}|\r?\n[\s\S]*?\r?\n\}))(?=[ \t]*(?:\r?\n|$))/g)) {
++    let reply;
++    try { reply = JSON.parse(json); } catch { continue; }
++    if (typeof reply?.name !== "string") continue;
++    const i = pending.findIndex(({ role, name }) => name ? reply.name === name
++      : reply.name === role || (reply.name.startsWith(role + "-") && /^\d+$/.test(reply.name.slice(role.length + 1))));
++    if (i < 0) continue;
++    pending.splice(i, 1);
++    if (reply.prompt_sent === true || reply.prompt_delivered_at_launch === true) delivered.push(reply.name);
++  }
++  return delivered;
++}
++
++function finishHandoffs(out, item, text) {
++  const delivered = confirmedHandoffs(text, item.handoffs);
++  for (const to of delivered) out.sends.push({ t: item.t, to });
++  if (delivered.length) {
++    item.name = "Send";
++    item.to ??= delivered[0];
++    item.hint = delivered.join(", ");
++  }
++  delete item.handoffs;
  }
- 
- // Messages arrive tagged <hc from="t7 review">. Only the address leaves here.
+
+@@ -137,10 +237,15 @@
+
+ function note(out, item, name, input, at) {
+-  const to = target(name, input);
+-  if (!to) return;
+-  item.name = "Send";
+-  item.hint = to;
+-  item.to = to;
+-  out.sends.push({ t: at, to });
++  const dest = destinations(name, input);
++  if (!dest.length) return;
++  const direct = dest.find(({ to }) => to)?.to;
++  const handoffs = dest.filter(({ role }) => role);
++  item.name = direct ? "Send" : "Handoff";
++  item.hint = direct ?? handoffs.map(({ role, name }) => name ?? role).join(", ");
++  if (direct) {
++    item.to = direct;
++    out.sends.push({ t: at, to: direct });
++  }
++  if (handoffs.length) item.handoffs = handoffs;
+ }
+
+@@ -210,4 +315,5 @@
+       else for (const b of Array.isArray(c) ? c : []) if (b.type === "text") heard(out, b.text, at);
+       for (const b of results) {
++        if (open[b.tool_use_id]?.handoffs) finishHandoffs(out, open[b.tool_use_id], b.is_error ? "" : resultText(b.content));
+         delete open[b.tool_use_id];
+         if (b.tool_use_id in agents) {
+@@ -303,4 +409,5 @@
+       const item = { t: b.time?.created ?? r.time_created, name, hint: hint(name, { ...given, file_path: given.filePath ?? given.file_path ?? (/^(read|edit|write)/i.test(name) ? given.path : undefined) }) };
+       note(out, item, name, given, item.t);
++      if (item.handoffs && typeof b.state?.output === "string") finishHandoffs(out, item, b.state.output);
+       out.tools++;
+       out.recent.push(item);

@@ -19,6 +19,10 @@ the herdr skill". Where the two seem to disagree anywhere else, the skill wins.
   only wraps the skill's own commands.
 - **Not `hc` or `herdr-app`.** Those belong to Herdr desktop (herdr-core),
   which the `hcorc` agent drives. Never use them here.
+<!-- if:hooks -->
+  The guard asks the user before a destructive `hc` or `herdr-app` command (one
+  it would block for hcorc); other `hc` and `herdr-app` commands run.
+<!-- endif -->
 
 ## Session start
 
@@ -107,9 +111,16 @@ Then write the handoff (step 4) and run
 `{{ORC}} ensure <role> [--name <name>] --launch <cli> [--model <model>] --handoff <handoff file>`.
 It puts the pane in one of your role tabs that has room, or in a new tab,
 starts the CLI there with `herdr agent start`, and sends it the handoff
-pointer (the conditional role line plus the handoff path). Check `started`
-and `prompt_sent` in its output; `agent_not_ready` means the CLI is blocked
-at startup, so read it.
+pointer (the conditional role line plus the handoff path). Check `started`,
+`prompt_sent` and `prompt_started` in its output: `ensure` returns once the
+first turn has started, so a later wait cannot see the idle state from before
+it. `prompt_started: false` with `prompt_sent: true` means the agent got the
+pointer but never started (read the pane). `prompt_sent: false` means it may
+not have arrived (a timeout, or `agent_not_ready` when the CLI is blocked at
+startup): read the pane before you send the pointer again, so the agent never
+gets the task twice. Then wait for the turn to end with
+`herdr agent wait <name> --timeout 270000` (in the background when several run
+at once), then step 5.
 
 ### 4. Handoff
 

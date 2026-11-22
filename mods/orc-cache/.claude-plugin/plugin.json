@@ -1,7 +1,11 @@
 {
   "name": "orc-cache",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Prompt-cache meter for the hcorc/herdorc orchestrators: cache read share and countdown above the prompt, the ODD phase, a guard against waits that outlast the cache, and a checkpoint hint when the context grows large.",
+  "author": {
+    "name": "herdr-orchestrators"
+  },
+  "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
     "ttl": {
@@ -9,14 +13,22 @@
       "title": "Cache lifetime",
       "description": "auto follows Claude Code's rules (FORCE_PROMPT_CACHING_5M, CLAUDE_CODE_PROMPT_CACHE_TTL, the promptCacheTtl setting, ENABLE_PROMPT_CACHING_1H), then what request timing shows, then the account default (1 hour on a subscription, 5 minutes otherwise); 5m or 1h pins it",
       "default": "auto",
-      "options": ["auto", "5m", "1h"]
+      "options": [
+        "auto",
+        "5m",
+        "1h"
+      ]
     },
     "waitGuard": {
       "type": "string",
       "title": "Waits longer than the cache",
       "description": "What to do when the orchestrator starts an hc/herdr wait that can last longer than the cache lifetime: deny tells the model to rerun it with a shorter --timeout, warn only shows a toast, off does nothing",
       "default": "deny",
-      "options": ["deny", "warn", "off"]
+      "options": [
+        "deny",
+        "warn",
+        "off"
+      ]
     },
     "checkpointAtTokens": {
       "type": "number",

@@ -72,7 +72,7 @@ installs into one project's folder. The CLI scripts also take these options:
 The scripts are thin wrappers around `python3 install.py` (`--cli`,
 `--herdr-app`, `--herdr`) and `python3 herdr-app/extras.py`, which take the
 same options. They need Python 3.9 or later; orc-flow also needs Node.js
-22.5 or later.
+22.13 or later.
 
 ### How the links work
 
@@ -96,7 +96,7 @@ links on the next run.
 
 | CLI | Orchestrators | Roles | Start | Notes |
 |---|---|---|---|---|
-| Claude Code | agents | subagents | `claude --agent hcorc` | `/hcorc-status`, `/hcorc-panes`, `/hcorc-cleanup`; guard and phase hooks in `settings.json`; the `orc-cache` mod as a plugin |
+| Claude Code | agents | subagents | `claude --agent hcorc` | `/hcorc-status`, `/hcorc-panes`, `/hcorc-cleanup`; guard and phase hooks in `settings.json`; the `orc-cache`, `orc-graph` and `orc-context` mods as plugins (the last two open their pane with `/orc-graph`, `/orc-context`, or by themselves with their `openPane` option) |
 | OpenCode | `mode: primary` agents | `mode: subagent` (read-only roles deny edits) | `opencode`, pick with Tab | same slash commands |
 | Antigravity (`agy`) | `mainAgent` agents | subagents with exact tool names | `agy --agent hcorc` | project scope: see Limitations |
 | Codex CLI | profiles `~/.codex/<name>.config.toml` | custom agents (`.toml`, sandbox per role) | `codex -p hcorc` | profiles are global even with `--scope project` |
@@ -155,9 +155,16 @@ uninstall.
 
 ### Limitations
 
-- Hooks exist only in Claude Code. In the other CLIs the guardrails are hard
-  rules in the prompt, and the agent reports its own ODD phase. The mods in
-  `mods/` are Claude Code-only by design; the orchestrators work without them.
+- Hooks exist only in Claude Code. There the guard blocks an orchestrator's
+  destructive commands on its own multiplexer and asks you before a
+  destructive command of the other one (`herdr` for hcorc, `hc`/`herdr-app`
+  for herdorc); its queries and other commands run. In the other CLIs the
+  guardrails are hard rules in the prompt, and the agent reports its own ODD
+  phase. The mods in `mods/` are Claude Code-only by design; the orchestrators
+  work without them.
+- Two herdorc in one herdr workspace each control only the panes and tabs they
+  created: each keeps its own record, per lead pane, in `~/.local/state/orc/`.
+  orc-flow's graph shows both.
 - Antigravity: the project-scope files go where its docs say
   (`.agents/agents/<name>/agent.md`). In testing, `agy agents` listed them
   only in a folder it already knew as a project. Global scope worked
@@ -182,7 +189,7 @@ installers/herdr.sh          # herdr plugin link + prefix+shift+z, which opens i
 ```
 
 The actions `orc-flow.open-split` and `orc-flow.open-tab` open it in a split
-or a tab. It needs Node.js 22.5 or newer. Details:
+or a tab. It needs Node.js 22.13 or newer. Details:
 `herdr/plugins/orc-flow/README.md`.
 
 ## Requirements
@@ -208,10 +215,10 @@ shared/bin/guard.py      Claude Code PreToolUse guard for hc / herdr commands
 layers/                  per-orchestrator layers, shared section, slash-command templates
 herdr-app/mods/          Herdr desktop mods, any CLI (orc-skills: the Skills panel; install.py --herdr-app)
 herdr-app/extras.*       third-party Herdr app mods, pinned (extras.json), and their installer
-mods/, .claude-plugin/   Claude Code-only plugins (orc-cache: prompt-cache meter, wait guard) + marketplace
+mods/, .claude-plugin/   Claude Code-only plugins (orc-cache: prompt-cache meter, wait guard; orc-graph, orc-context: panes) + marketplace herdr-orchestrators
 scripts/                 port scripts (tomidev-shell -> shared/), herdr skill sync, build-agents.py
 herdr/plugins/orc-flow/  herdr plugin, any CLI: herdorc and its role panes as a live graph (Node)
-tests/                   test_install.sh, test_guard.sh, test_orc_herdr.sh, test_orc_hc.sh
+tests/                   test_install.sh, test_skills.sh, test_runtime.sh, test_guard.sh, test_orc_herdr.sh, test_orc_hc.sh
 ```
 
 ## Development
@@ -223,10 +230,12 @@ tests/                   test_install.sh, test_guard.sh, test_orc_herdr.sh, test
   `if:!…`). They are kept or dropped by what each CLI supports.
 - `python3 scripts/sync-herdr-skill.py` checks the vendored herdr skill
   against upstream; `--update` refreshes it.
-- Tests: `bash tests/test_install.sh` needs nothing. `test_guard.sh`,
-  `test_orc_herdr.sh` and `test_orc_hc.sh` need `herdr` / Herdr desktop and
-  use isolated sessions. `node --test herdr/plugins/orc-flow/test/` tests
-  the orc-flow plugin and needs nothing but Node.js 22.5 or newer.
+- Tests: `bash tests/test_install.sh`, `test_skills.sh` and
+  `test_runtime.sh` need nothing. `test_guard.sh`, `test_orc_herdr.sh` and
+  `test_orc_hc.sh` need `herdr` / Herdr desktop and use isolated sessions
+  (Herdr desktop has none: `test_orc_hc.sh` works in a temporary space it
+  closes). `claude plugin test mods/<mod>` tests a Claude Code mod. `node --test herdr/plugins/orc-flow/test/` tests
+  the orc-flow plugin and needs nothing but Node.js 22.13 or newer.
 
 ## License
 

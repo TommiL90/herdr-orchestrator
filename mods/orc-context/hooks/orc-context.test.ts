@@ -69,6 +69,7 @@ const engine = (on: Parameters<TestBody>[1], env: Record<string, string>, state:
   mock.env(on, { HOME: '/h', ...env })
   mock.clock(on, { now: 1_000_000 })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', (_, e) => ({ sessionId: (e as { sessionId?: string }).sessionId ?? 's' }) as never)
   on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { tokens: 50_000, window: 200_000, percent: 25 } } }) as never)
   on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ terminals: [
     { address: 't7', name: 'gentle-ai-worker', parent: 't1', state: 'live', status: 'working', agent: 'claude-code' },
@@ -86,15 +87,30 @@ const engine = (on: Parameters<TestBody>[1], env: Record<string, string>, state:
   })
 }
 
-test('an hcorc session opens the pane with its own window and its panes reports', async ($, on) => {
+test('an hcorc session reads its own window and its panes reports, and leaves the pane closed', async ($, on) => {
   const state: Record<string, unknown> = {}
   const opened: string[] = []
   engine(on, { CLAUDE_CODE_AGENT: 'hcorc', HC_TERMINAL_ID: 't1' }, state, opened, [])
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  expect(opened).toEqual(['orc-context'])
+  expect(opened).toEqual([])
   expect((state.main as { value?: unknown }).value).toEqual({ tokens: 50_000, window: 200_000 })
   expect(JSON.stringify(state.members)).toContain('"ctxKey":"hc-t7"')
   expect(JSON.stringify(state.panes)).toContain('"key":"hc-t7","tokens":42000')
+})
+
+test('openPane opens the pane when an orchestrator session starts', { options: { openPane: true } }, async ($, on) => {
+  const opened: string[] = []
+  engine(on, { CLAUDE_CODE_AGENT: 'hcorc', HC_TERMINAL_ID: 't1' }, {}, opened, [])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(opened).toEqual(['orc-context'])
+})
+
+test('a role pane that ends its session withdraws its report', async ($, on) => {
+  const written: string[] = []
+  engine(on, { HC_TERMINAL_ID: 't7' }, {}, [], written)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's', resume: {} } as never)
+  expect(written).toContain('/h/.local/state/orc/ctx/hc-t7.json')
 })
 
 test('a role pane opens nothing', async ($, on) => {

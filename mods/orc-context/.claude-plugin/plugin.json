@@ -1,7 +1,11 @@
 {
   "name": "orc-context",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Claude Code only: the context each agent of an hcorc/herdorc orchestrator has used, in one pane; Claude Code role panes report their own.",
+  "author": {
+    "name": "herdr-orchestrators"
+  },
+  "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
     "report": {
@@ -9,6 +13,12 @@
       "title": "Report this session's context",
       "description": "Inside an hc or herdr pane, write this session's context to ~/.local/state/orc/ctx so the orchestrator's Context pane can show it.",
       "default": true
+    },
+    "openPane": {
+      "type": "boolean",
+      "title": "Open the Context pane by itself",
+      "description": "Open the Context pane when an hcorc/herdorc session starts. Off: it opens with /orc-context.",
+      "default": false
     }
   }
 }

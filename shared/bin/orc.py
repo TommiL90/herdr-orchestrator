@@ -267,8 +267,7 @@ class HcBackend:
             if listed is None:
                 return False  # no answer: do not cache a wrong "absent"
             names = [c.get("name") for c in listed]
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            cache.write_text(json.dumps(names))
+            orc_state.write_atomic(cache, json.dumps(names))
         return command in names
 
     def phase_surface(self):
@@ -299,7 +298,7 @@ class HerdrBackend:
         self.workspace = os.environ["HERDR_WORKSPACE_ID"]
         self.cwd = os.getcwd()
         self.session = orc_state.herdr_session()
-        self.state_file = orc_state.herdorc_state_path(self.session, self.workspace)
+        self.state_file = orc_state.herdorc_state_path(self.session, self.workspace, self.me)
 
     def _result(self, args):
         data = run_json(["herdr"] + args)
@@ -325,14 +324,15 @@ class HerdrBackend:
         Recorded panes/tabs that no longer match (closed, relabelled, or an id
         reused by herdr) are pruned from the state file here.
         """
+        state = self.load_state()  # before the lists: what they can vouch for
         panes, tabs, agents = self._list("pane"), self._list("tab"), self._list("agent")
-        state = self.load_state()
         if panes is None or tabs is None:
             owned_panes, owned_tabs = set(), set()  # cannot verify; keep the file as is
         else:
             owned_panes, owned_tabs, pruned = orc_state.herdr_owned(state, panes, tabs)
-            if pruned != state:
-                self.save_state(pruned)
+            if pruned != state:  # only entries the lists saw and nobody changed since
+                orc_state.update_herdorc_state(
+                    self.state_file, lambda cur: orc_state.apply_prune(cur, state, pruned))
         return {"panes": panes or [], "tabs": tabs or [],
                 "agents": {a.get("pane_id"): a for a in agents or []},
                 "owned_panes": owned_panes, "owned_tabs": owned_tabs}
@@ -368,9 +368,8 @@ class HerdrBackend:
         tab = (res.get("tab") or {}).get("tab_id")
         root = (res.get("root_pane") or {}).get("pane_id")
         if tab:
-            st = self.load_state()
-            st["tabs"][tab] = {"title": (res.get("tab") or {}).get("label") or title}
-            self.save_state(st)
+            label = (res.get("tab") or {}).get("label") or title
+            orc_state.update_herdorc_state(self.state_file, lambda st: st["tabs"].__setitem__(tab, {"title": label}))
         return tab, root
 
     def split(self, pane_id):
@@ -383,9 +382,8 @@ class HerdrBackend:
         pane = self._result(["pane", "get", pane_id]).get("pane") or {}
         if code != 0 or pane.get("label") != name:
             return False
-        st = self.load_state()
-        st["panes"][pane_id] = {"name": name, "terminal": pane.get("terminal_id")}
-        self.save_state(st)
+        record = {"name": name, "terminal": pane.get("terminal_id")}
+        orc_state.update_herdorc_state(self.state_file, lambda st: st["panes"].__setitem__(pane_id, record))
         return True
 
     def start_agent(self, name, harness, model, pane_id):
@@ -396,6 +394,8 @@ class HerdrBackend:
         if harness == "codex":
             extra = [a for a in extra if a != "--no-daemon"]
         if harness == "td":
+            # herdr has no `td` kind: the pane runs pi (td's agent) with td's arguments,
+            # without the td wrapper itself. hcorc runs td as is.
             extra = extra[1:]
         cmd = ["herdr", "agent", "start", name, "--kind", kind, "--pane", pane_id]
         if extra:
@@ -413,8 +413,8 @@ class HerdrBackend:
         run(["herdr", "pane", "rename", self.me] + ([text] if text else ["--clear"]))
 
 
-def backend():
-    agent = current_agent()
+def backend(agent=None):
+    agent = agent or current_agent()
     if agent == "hcorc":
         return HcBackend()
     if agent == "herdorc":
@@ -550,7 +550,12 @@ def cmd_ensure(argv):
         res = b.create(name, tab, argv_)
         if not reused_tab and "error" not in res:
             b.rename_tab(tab, f"{b.name} · {name}")
-        res["prompt_delivered_at_launch"] = bool(a.launch in PROMPT_AT_LAUNCH and prompt)
+        # Only when the CLI started with the prompt in its argv; a failed start, or a
+        # first message hc reports as not sent (a trust dialog), means: send it yourself.
+        first = res.get("first_message")
+        res["prompt_delivered_at_launch"] = bool(
+            a.launch in PROMPT_AT_LAUNCH and prompt and "error" not in res
+            and not (isinstance(first, dict) and first.get("sent") is False))
     else:
         tab, anchor = b.tab_with_room(snap)
         pane = b.split(anchor) if anchor else None
@@ -564,10 +569,19 @@ def cmd_ensure(argv):
         if a.launch:
             res.update(b.start_agent(name, a.launch, a.model, pane))
             if prompt and res.get("started"):
-                code, out, err = run(["herdr", "agent", "prompt", name, prompt], timeout=60)
-                res["prompt_sent"] = code == 0
+                # --wait --until working: returns once the turn has started (or the agent
+                # asks for something), so a later `agent wait` cannot see the idle state
+                # from before it. Only agent_prompt_stalled says the text was sent (and no turn
+                # was seen); a timeout may expire before the text is sent, so it says nothing.
+                code, out, err = run(["herdr", "agent", "prompt", name, prompt, "--wait",
+                                      "--until", "working", "--until", "blocked",
+                                      "--timeout", "20000"], timeout=60)
+                said = (err or out).strip()
+                stalled = code != 0 and "agent_prompt_stalled" in said
+                res["prompt_sent"] = code == 0 or stalled  # stalled: delivered, never started
+                res["prompt_started"] = code == 0
                 if code != 0:
-                    res["prompt_error"] = (err or out).strip()[:400]
+                    res["prompt_error"] = said[:400]
     if prompt:
         res["pointer"] = prompt  # what the agent got, or what to send once it is idle
     print(json.dumps(res, indent=1))
@@ -578,7 +592,7 @@ def _phase_file(agent):
     if agent == "hcorc":
         me = os.environ.get("HC_TERMINAL_ID")
     else:
-        me = f"{os.environ.get('HERDR_SESSION') or 'default'}-{os.environ.get('HERDR_PANE_ID') or 'none'}"
+        me = f"{orc_state.herdr_session()}-{os.environ.get('HERDR_PANE_ID') or 'none'}"
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     return STATE_DIR / f"phase-{agent}-{orc_state.safe(me)}.json"
 
@@ -594,9 +608,9 @@ def _apply_phase(agent, phase, source):
         return  # an explicit report survives weaker inferred phases
     if phase == cur.get("phase") and (source == cur.get("source") or source == "inferred"):
         return
-    f.write_text(json.dumps({"phase": phase, "source": source}))
-    b = backend()
+    b = backend(agent)  # before the file: a backend that cannot start leaves it untouched
     b.set_label(f"{b.name} · {phase}" if phase else "")
+    orc_state.write_atomic(f, json.dumps({"phase": phase, "source": source}))
 
 
 CHECK_RE = re.compile(r"\b(test|tests|pytest|jest|vitest|mocha|go test|cargo (test|check|clippy|build)|"
@@ -631,6 +645,8 @@ def cmd_phase(argv):
             data = json.load(sys.stdin)
         except Exception:
             return
+        if not isinstance(data, dict) or data.get("agent_id"):
+            return  # a subagent's tool call says nothing about the orchestrator's phase
         agent = (data.get("agent_type") or current_agent()).split(":")[-1]
         if agent not in AGENTS:
             return
@@ -680,7 +696,12 @@ def scan_skills(dirs, scope, seen):
     out = []
     for d in dirs:
         for md in sorted(d.glob("*/SKILL.md")) if d.is_dir() else []:
-            real = md.resolve()
+            try:
+                if not md.is_file():  # a broken link, or a folder named SKILL.md
+                    continue
+                real = md.resolve()
+            except (OSError, RuntimeError):  # a symlink loop
+                continue
             if real in seen or (md.parent / ".orc-generated").exists():  # copies older builds made
                 continue
             seen.add(real)
@@ -709,7 +730,10 @@ def cmd_skills(argv):
     registry dedupes); same-purpose conflicts under other names are left to the agent."""
     ours = {skill_name(md): md for md in sorted(SKILLS_DIR.glob("*/SKILL.md"))}
     root, seen = project_root(), {md.resolve() for md in ours.values()}
-    bases = [Path.cwd()] + ([root] if root.resolve() != Path.cwd().resolve() else [])
+    # The home folder is not a project: its .claude/skills etc. are the user's skills
+    # (a new terminal often starts there).
+    home = Path.home().resolve()
+    bases = [b for b in dict.fromkeys([Path.cwd().resolve(), root.resolve()]) if b != home]
     found = scan_skills([b / d for b in bases for d in PROJECT_SKILL_DIRS], "project", seen)
     found += scan_skills(user_skill_dirs(), "user", seen)
     conflicts = []
