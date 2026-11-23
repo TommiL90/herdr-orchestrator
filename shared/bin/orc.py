@@ -246,14 +246,37 @@ class HcBackend:
                     return tb["id"]
         return None
 
-    def my_pane_id(self):
-        app = run_json(["herdr-app", "ls"]) or {}
+    def pane_of(self, terminal, app=None):
+        """The herdr-app pane showing a terminal, or None."""
+        if app is None:
+            app = run_json(["herdr-app", "ls"]) or {}
         for s in app.get("spaces", []):
             for tb in s.get("tabs", []):
                 for t in tb.get("terminals", []):
-                    if t.get("terminal") == self.me:
+                    if t.get("terminal") == terminal:
                         return t.get("pane")
         return None
+
+    def my_pane_id(self):
+        return self.pane_of(self.me)
+
+    def name_panes(self, results, attempts=12):
+        """Give each created role pane its role's name in Herdr (herdr-app 0.1.17+:
+        `pane.rename`), so any pane header shows it. herdr-app adopts a terminal
+        made by `hc run` shortly after; wait for it as rename_tab does."""
+        todo = {r["address"]: r["name"] for r in results if r.get("address") and "error" not in r}
+        if not todo or not self.app_has("pane.rename"):
+            return
+        for _ in range(attempts):
+            app = run_json(["herdr-app", "ls"]) or {}
+            for terminal, name in list(todo.items()):
+                pane = self.pane_of(terminal, app)
+                if pane:
+                    run(["herdr-app", "do", "pane.rename", "--pane", pane, "--name", name])
+                    del todo[terminal]
+            if not todo:
+                return
+            time.sleep(0.5)
 
     def app_has(self, command):
         """Whether this herdr-app binary has a command.
@@ -282,16 +305,21 @@ class HcBackend:
         return command in names
 
     def phase_surface(self):
-        """Where the ODD phase is shown, or None when this herdr-app cannot show it."""
-        if self.app_has("pane.rename"):
-            return "pane name"
-        return "pane header" if os.path.isdir(os.path.join(herdr_app_home(), "mods", "orc-panes")) else None
+        """Where the ODD phase is shown, or None when this herdr-app cannot show it.
+
+        The orc-panes header first: the phase goes in a label it draws over the pane's
+        name, so the name someone gave the pane stays (and headers copied from before
+        herdr-app 0.1.17, as herdr-nvim's, draw no pane name at all)."""
+        if os.path.isdir(os.path.join(herdr_app_home(), "mods", "orc-panes")):
+            return "pane header"
+        return "pane name" if self.app_has("pane.rename") else None
 
     def set_label(self, text):
-        """ODD phase indicator: the orchestrator's pane name. herdr-app has no pane.rename
-        (0.1.x): with the orc-panes mod installed, the phase goes in this terminal's
-        PHASE_LABEL, which its pane header shows over the pane's name; an empty text
-        removes it. Without either, nothing shows."""
+        """ODD phase indicator. With the orc-panes mod installed, the phase goes in this
+        terminal's PHASE_LABEL, which its pane header shows over the pane's name; an
+        empty text removes it. Otherwise, on herdr-app 0.1.17+, it is the pane's name
+        (as herdorc's is in herdr); an empty text unnames the pane. Without either,
+        nothing shows."""
         surface = self.phase_surface()
         if surface == "pane name":
             pane = self.my_pane_id()
@@ -515,6 +543,7 @@ def cmd_panes(argv):
             created += results
             if any("error" not in r for r in results):
                 b.rename_tab(tab, title)
+                b.name_panes(results)
         else:
             tab, root = b.new_tab(title)
             if not tab or not root:
@@ -567,6 +596,7 @@ def cmd_ensure(argv):
         res = b.create(name, tab, argv_)
         if not reused_tab and "error" not in res:
             b.rename_tab(tab, f"{b.name} · {name}")
+        b.name_panes([res])
         # Only when the CLI started with the prompt in its argv; a failed start, or a
         # first message hc reports as not sent (a trust dialog), means: send it yourself.
         first = res.get("first_message")

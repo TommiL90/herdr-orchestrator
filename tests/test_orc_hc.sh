@@ -78,7 +78,7 @@ else
 fi
 
 # 6. phase: explicit survives a weaker inferred phase, a strong one replaces it.
-#    herdr-app without pane.rename shows nothing and leaves the layout alone.
+#    The indicator: orc-panes' header label first, else the pane name (pane.rename).
 own_tab_name() { herdr-app ls | python3 -c "
 import json,sys
 for s in json.load(sys.stdin)['spaces']:
@@ -90,20 +90,21 @@ echo '{"agent_type":"hcorc","tool_name":"Read","tool_input":{"file_path":"/x"}}'
 check "explicit survives inferred exploring" "grep -q researching \"\$PHASE_FILE\""
 echo '{"agent_type":"hcorc","tool_name":"Edit","tool_input":{"file_path":"/x/y.py"}}' | $ORC phase --hook
 check "strong inferred replaces explicit" "grep -q implementing \"\$PHASE_FILE\""
-if [ -d "$HERDR_APP_HOME/mods/orc-panes" ] && ! herdr-app commands | grep -q '"pane.rename"'; then
+if [ -d "$HERDR_APP_HOME/mods/orc-panes" ]; then
   check "phase reaches the Core label read by orc-panes" "hc get '$ROOT' --json | python3 -c 'import json,sys; assert json.load(sys.stdin)[\"labels\"][\"orc.phase\"] == \"hcorc · implementing\"'"
 fi
 $ORC phase clear >/dev/null
 check "tab name untouched by phase" "[ \"\$(own_tab_name)\" = '$BEFORE' ]"
+# An app home of the test's own, without and with orc-panes.
+APPHOME="$ORC_HC_TEST_ROOT/header-check"
+mkdir -p "$APPHOME"
 if herdr-app commands | grep -q '"pane.rename"'; then
-  check "status: indicator active" "$ORC status | grep -q 'phase indicator: active (pane name)'"
-else  # without pane.rename the orc-panes mod shows it: an app home of the test's own, with and without it
-  APPHOME="$ORC_HC_TEST_ROOT/header-check"
-  mkdir -p "$APPHOME"
+  check "status: indicator in the pane name without orc-panes" "HERDR_APP_HOME=$APPHOME $ORC status | grep -q 'phase indicator: active (pane name)'"
+else
   check "status: indicator inactive without orc-panes" "HERDR_APP_HOME=$APPHOME $ORC status | grep -q 'phase indicator: inactive'"
-  mkdir -p "$APPHOME/mods/orc-panes"
-  check "status: indicator in the pane header with orc-panes" "HERDR_APP_HOME=$APPHOME $ORC status | grep -q 'phase indicator: active (pane header)'"
 fi
+mkdir -p "$APPHOME/mods/orc-panes"
+check "status: indicator in the pane header with orc-panes" "HERDR_APP_HOME=$APPHOME $ORC status | grep -q 'phase indicator: active (pane header)'"
 
 # 7. A Core restart keeps the shell process, pane roles and desktop mapping.
 terminal_pid() { hc get "$ROOT" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["pid"] or "")'; }

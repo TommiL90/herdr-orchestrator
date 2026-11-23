@@ -173,28 +173,31 @@ The mod lives in `herdr-app/mods/orc-skills/`.
 
 ### Pane names in Herdr desktop
 
-herdr names its panes (`herdr pane rename`); Herdr desktop has no such
-command. `installers/herdr-app.sh` also installs the `orc-panes` mod, which
-becomes the pane header of the same layout. It is the header that layout
-already had, with only the name changed: the installer copies that header's
-code under `orc-panes/base/` (Herdr's own, or herdr-nvim's, whose Preview
-button stays) and keeps it in the header's `props.replaces` for the
-uninstall. The name shown is, in this order:
+Herdr desktop names panes since 0.1.17 (Rename at the top of the pane menu,
+`pane.rename`), and its own pane header shows that name. Headers copied from
+an older Herdr, as herdr-nvim's (Preview/Source button), don't.
+`installers/herdr-app.sh` also installs the `orc-panes` mod, which becomes
+the pane header of the same layout. It is the header that layout already
+had, with only the name changed: the installer copies that header's code
+under `orc-panes/base/` (Herdr's own, or herdr-nvim's, whose Preview button
+stays) and keeps it in the header's `props.replaces` for the uninstall. The
+name shown is, in this order:
 
-- `orc.phase`: hcorc's ODD phase (`hcorc · exploring`), from `orc.py phase`;
-- `orc.pane-name`: the name you gave the pane;
-- the terminal's own name (`hc run --name`), so hcorc's role panes show
-  their role instead of the agent's name;
+- `orc.phase`: hcorc's ODD phase (`hcorc · exploring`), from `orc.py phase`,
+  a terminal label, so the name you gave the pane stays;
+- the name Herdr gives the pane (the pane menu's Rename);
+- `orc.pane-name`: a name given with an older orc-panes, which had its own
+  rename dialog and key (a reinstall takes that key back);
+- the terminal's own name (`hc run --name`);
 - otherwise, what the header showed before.
 
-Double-click a pane's header, or press `ctrl-space shift-p` (bound only if
-free), to rename the focused pane; an empty name gives it back its own.
-Names are terminal labels in herdr-core (`hc label <t> orc.pane-name=...`),
-so they survive restarts and every Herdr window sees them. Only terminal
-panes take a name. The copied header does not follow updates: after Herdr or
-herdr-nvim updates its header, run `installers/herdr-app.sh` again
-(`herdr-app-extras.sh` does this by itself around herdr-nvim's installer).
-The mod lives in `herdr-app/mods/orc-panes/`.
+`orc.py panes` and `ensure` also name each role pane they create after its
+role (`pane.rename`), so any header shows it. Without orc-panes, hcorc's
+phase is the orchestrator pane's name, as herdorc's is in herdr, and
+clearing the phase unnames it. The copied header does not follow updates:
+after Herdr or herdr-nvim updates its header, run `installers/herdr-app.sh`
+again (`herdr-app-extras.sh` does this by itself around herdr-nvim's
+installer). The mod lives in `herdr-app/mods/orc-panes/`.
 
 ### Third-party Herdr app mods
 

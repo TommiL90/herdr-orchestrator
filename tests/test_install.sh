@@ -220,7 +220,14 @@ check "herdr-app: orc-panes is the pane header, drawing through Herdr's own (cop
 import json, sys; sys.path.insert(0, '$REPO'); import install as I
 look = I.herdr_tab_looks(json.load(open('$L')))[0]
 assert look['pane']['header']['content'] == {'mod': 'orc-panes', 'props': {'replaces': None, 'added': 'pane'}}, look\" && grep -q '^check $H/mods/orc-panes' '$T/herdr-calls'"
-check "herdr-app: the rename key is bound where free" "python3 -c \"import json;g=json.load(open('$H/keys.json'))['global'];assert g['ctrl-space shift-p']=='orc-panes.rename' and g['f2']=='tab.rename',g\""
+check "herdr-app: no rename key: Herdr renames panes itself" "python3 -c \"import json;g=json.load(open('$H/keys.json'))['global'];assert 'ctrl-space shift-p' not in g and g['f2']=='tab.rename',g\""
+check "herdr-app: a rerun takes back the rename key an older install bound" "python3 -c \"
+import json, sys; sys.path.insert(0, '$REPO'); import install as I
+k = '$H/keys.json'; d = json.load(open(k)); d['global']['ctrl-space shift-p'] = 'orc-panes.rename'; json.dump(d, open(k, 'w'))
+m = I.read_manifest(); m['herdr-app|$H'].setdefault('keys', {})['ctrl-space shift-p'] = 'orc-panes.rename'; I.manifest_path().write_text(json.dumps(m))\" && HP >/dev/null && python3 -c \"
+import json, sys; sys.path.insert(0, '$REPO'); import install as I
+g = json.load(open('$H/keys.json'))['global']; assert 'ctrl-space shift-p' not in g, g
+assert 'ctrl-space shift-p' not in I.read_manifest()['herdr-app|$H'].get('keys', {})\""
 M0=$(stat -f %m "$L" 2>/dev/null || stat -c %Y "$L"); sleep 1
 check "herdr-app: rerun adds nothing twice, leaves the layout file alone" "HP >/dev/null && [ \$(grep -c orc-skills-panel '$L') = 1 ] && [ \$(stat -f %m '$L' 2>/dev/null || stat -c %Y '$L') = $M0 ]"
 INODE() { python3 -c "import os, sys; print(os.lstat(sys.argv[1]).st_ino)" "$1"; }
@@ -299,18 +306,18 @@ assert h['content']['mod'] == 'orc-panes' and h['content']['props']['replaces'][
 assert m['herdr-app|' + str(hp)]['panes'] == {'base': 'herdr-nvim-header'}
 assert (hp / 'mods/orc-panes/base/pane-base.js').is_file()\""
 if command -v node >/dev/null; then
-check "orc-panes names: phase over a given name over the terminal's own; empty text unnames" "node --input-type=module -e \"
+check "orc-panes names: phase over Herdr's name over an older orc-panes name over the terminal's own" "node --input-type=module -e \"
 import * as n from '$REPO/herdr-app/mods/orc-panes/names.js';
 const a = (c, m) => { if (!c) { console.error(m); process.exit(1); } };
 a(n.chosenName({ name: 'gentle-ai-worker', labels: {} }) === 'gentle-ai-worker', 'terminal name');
-a(n.chosenName({ name: 'w', labels: { 'orc.pane-name': '  fix   login ' } }) === 'fix login', 'given name');
-a(n.chosenName({ labels: { 'orc.pane-name': 'x', 'orc.phase': 'hcorc · exploring' } }) === 'hcorc · exploring', 'phase');
+a(n.chosenName({ name: 'w', labels: { 'orc.pane-name': '  fix   login ' } }) === 'fix login', 'older name');
+a(n.chosenName({ name: 'w', labels: { 'orc.pane-name': 'old' } }, { name: 'mine' }) === 'mine', 'Herdr name');
+a(n.chosenName({ labels: { 'orc.phase': 'hcorc · exploring' } }, { name: 'mine' }) === 'hcorc · exploring', 'phase');
+a(n.chosenName(null, { name: 'mod pane' }) === 'mod pane', 'no terminal');
 a(n.chosenName({ labels: {} }) === null && n.chosenName(undefined) === null, 'none');
-a(n.givenName({ labels: { 'orc.phase': 'p' }, name: 'r' }) === 'r', 'given never the phase');
 a(n.cleanName('x'.repeat(90)).length === 80, 'cut');
 const p = n.withName({ title: 't', program: { name: 'Claude Code', agent: true, icon: 'i' } }, 'role');
 a(p.title === 'role' && p.program.name === 'role' && p.program.icon === 'i', 'withName');
-a(JSON.stringify(n.labelArgs('t7', '')) === JSON.stringify(['label', 't7', 'orc.pane-name=']), 'unname');
 \""
 fi
 

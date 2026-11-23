@@ -1130,7 +1130,9 @@ HERDR_MARKER = ".orc-generated"  # hidden: Herdr does not reload on it
 # orc-panes, names for panes: it becomes the layout's pane header, drawing through a
 # copy of the header it replaced (under base/), and keeps that one in props.replaces.
 HERDR_PANES = "orc-panes"
-PANES_KEYS = {"ctrl-space shift-p": "orc-panes.rename"}  # beside ctrl-space shift-t (tab.rename)
+# Bound by orc-panes before Herdr renamed panes itself (0.1.17, Rename in the pane
+# menu): installs and uninstalls take it back where it still does what we bound.
+OLD_PANES_KEYS = {"ctrl-space shift-p": "orc-panes.rename"}
 PANES_HEADER = {"height": 30, "position": "top", "reveal": "always"}  # as Herdr's main layout has it
 
 
@@ -1579,7 +1581,7 @@ def install_herdr_app(dry, force, manifest):
                 herdr_write(layout_path, json.dumps(tree, indent=2) + "\n")
             print(f"[herdr-app] herdr-app check of orc-panes failed:\n{(pcheck.stdout + pcheck.stderr).strip()}")
             return False
-        herdr_add_keys("herdr-app", PANES_KEYS, hp, manifest[key])
+        herdr_drop_keys(hp, manifest[key], OLD_PANES_KEYS, "herdr-app")
         names = f"pane names in its pane header (drawing through {base})"
     print(f"[herdr-app] wrote {len(changed)} of {len(files)} files under {built}"
           + (f", linked {dst} to it" if relink else "") + f"; Skills panel in layout {target}"
@@ -1612,7 +1614,7 @@ def uninstall_herdr_app(dry, manifest):
                 herdr_unpatch(tree, herdr_tabs_row_ours(tree, entry))
                 panes_release(tree)
                 herdr_write(layout_path, json.dumps(tree, indent=2) + "\n")
-    herdr_drop_keys(hp, entry, PANES_KEYS, "herdr-app")
+    herdr_drop_keys(hp, entry, OLD_PANES_KEYS, "herdr-app")
     herdr_unplace(hp, HERDR_MOD)
     herdr_unplace(hp, HERDR_PANES)
     print(f"[herdr-app] removed {dst}, pane names and "

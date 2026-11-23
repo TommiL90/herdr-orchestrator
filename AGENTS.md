@@ -99,10 +99,12 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
   through a copy of the header it replaced: `panes_files` copies that mod's
   modules under `base/` at install, and `props.replaces` keeps it for
   `panes_release`. `panes_take` takes only the headers drawn by that same mod,
-  so a layout that mixes headers keeps the others. Its labels `orc.pane-name`
-  and `orc.phase` (`names.js`) are shared with `orc.py` (`PHASE_LABEL`,
-  `HcBackend.set_label`): change both
-  together. `extras.py` gives the header back around a mod's own installer or
+  so a layout that mixes headers keeps the others. It draws the name Herdr
+  gives a pane (herdr-app 0.1.17+, `pane.rename`), which headers copied from an
+  older Herdr (herdr-nvim's) don't. Its label `orc.phase` (`names.js`) is
+  shared with `orc.py` (`PHASE_LABEL`, `HcBackend.set_label`, which prefers it
+  over `pane.rename` where orc-panes is installed): change both together.
+  `orc.pane-name` is only read, for names given before Herdr named panes. `extras.py` gives the header back around a mod's own installer or
   uninstaller (`panes_hand_back`, `panes_take_back`). The repo folder has no
   `base/`, so run `herdr-app check` on a build (the installed
   `mods/orc-panes`, or one made with `panes_files`).

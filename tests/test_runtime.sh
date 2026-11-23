@@ -111,8 +111,9 @@ mkdir -p "$T/app/mods/agent-flow"
 FL env HC_TERMINAL_ID=t7 HERDR_APP_HOME="$T/app" "$ORC" --as hcorc flow > "$T/flow-out"
 check "hcorc flow: agent-flow split right of its own pane" "grep -q '\"opened\": true' '$T/flow-out' && grep -q -- 'herdr-app do pane.split --direction right --pane p7 --mod agent-flow' '$T/flow-calls'"
 
-# 8. hcorc's phase: herdr-app has no pane.rename, so it goes in the orc.phase label
-# that the orc-panes pane header shows, and only where orc-panes is installed.
+# 8. hcorc's phase: with orc-panes it goes in the orc.phase label its pane header
+# shows (the pane keeps the name it was given); without it, on a herdr-app with
+# pane.rename, it is the pane's name; with neither, nothing shows.
 : > "$T/calls"
 printf '%s' '{"agent_type": "hcorc", "tool_name": "Read", "tool_input": {}}' | env HC_TERMINAL_ID=t7 HERDR_APP_HOME="$T/app2" "$ORC" phase --hook
 check "hcorc phase without orc-panes labels nothing" "! grep -q 'hc label' '$T/calls'"
@@ -124,6 +125,30 @@ check "phase clear removes the label" "grep -q 'hc label t7 orc.phase=\$' '$T/ca
 check "status names the pane header as the indicator" "env HC_TERMINAL_ID=t7 HERDR_APP_HOME='$T/app2' python3 -c \"
 import sys; sys.path.insert(0, '$REPO/shared/bin'); import orc
 assert orc.HcBackend().phase_surface() == 'pane header'\""
+RN=$T/rename-bin; mkdir -p "$RN"
+cat > "$RN/herdr-app" <<SH
+#!/bin/sh
+echo "herdr-app \$*" >> "$T/calls"
+case "\$1" in
+  commands) echo '[{"name":"pane.rename"},{"name":"pane.split"}]' ;;
+  ls) echo '{"spaces":[{"id":"sp1","tabs":[{"id":"tb1","terminals":[{"terminal":"t9","pane":"p9"},{"terminal":"t7","pane":"p7"}]}]}]}' ;;
+  do) echo '{}' ;;
+esac
+SH
+chmod +x "$RN/herdr-app"; RN() { PATH="$RN:$PATH" "$@"; }
+: > "$T/calls"; rm -f "$HOME/.local/state/orc/phase-hcorc-t7.json"
+printf '%s' '{"agent_type": "hcorc", "tool_name": "Read", "tool_input": {}}' | RN env HC_TERMINAL_ID=t7 HERDR_APP_HOME="$T/app2" "$ORC" phase --hook
+check "with orc-panes the phase stays a label, the pane name is left alone" "grep -q 'hc label t7 orc.phase=hcorc · exploring' '$T/calls' && ! grep -q 'pane.rename' '$T/calls'"
+: > "$T/calls"; rm -f "$HOME/.local/state/orc/phase-hcorc-t7.json"
+printf '%s' '{"agent_type": "hcorc", "tool_name": "Read", "tool_input": {}}' | RN env HC_TERMINAL_ID=t7 HERDR_APP_HOME="$T/app" "$ORC" phase --hook
+check "without orc-panes the phase is the pane name (herdr-app 0.1.17+)" "grep -q 'herdr-app do pane.rename --pane p7 --name hcorc · exploring' '$T/calls' && ! grep -q 'hc label' '$T/calls'"
+RN env HC_TERMINAL_ID=t7 HERDR_APP_HOME="$T/app" "$ORC" --as hcorc phase clear >/dev/null
+check "phase clear unnames the pane" "grep -q 'herdr-app do pane.rename --pane p7 --name \$' '$T/calls'"
+: > "$T/calls"
+check "created role panes get their role as Herdr pane name" "RN env HC_TERMINAL_ID=t7 python3 -c \"
+import sys; sys.path.insert(0, '$REPO/shared/bin'); import orc
+b = orc.HcBackend.__new__(orc.HcBackend)
+b.name_panes([{'name': 'gentle-ai-worker', 'address': 't9'}, {'name': 'x', 'error': 'no'}])\" && grep -q 'herdr-app do pane.rename --pane p9 --name gentle-ai-worker' '$T/calls' && [ \$(grep -c 'pane.rename' '$T/calls') = 1 ]"
 
 echo "runtime: pass=$pass fail=$fail"
 [ "$fail" = 0 ]
