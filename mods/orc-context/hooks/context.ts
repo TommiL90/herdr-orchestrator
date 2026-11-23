@@ -10,6 +10,23 @@ export const STALE_MS = 10 * 60_000
 /** A finished subagent stays listed this long, then joins the footer's count. */
 export const SUB_KEEP_MS = 10 * 60_000
 const DEFAULT_WINDOW = 200_000
+/**
+ * Tokens left before the session compacts by itself: its own threshold (the
+ * engine's `autoCompactThreshold`, absent when auto-compaction is off) less the
+ * last request and the answer it got, which the next request carries too.
+ */
+export function compactHeadroom(r: { tokens?: number; output?: number; compactAt?: number }): number | undefined {
+  if (r.tokens === undefined || r.compactAt === undefined) return undefined
+  return Math.max(0, r.compactAt - r.tokens - (r.output ?? 0))
+}
+
+/** The headroom for a row's meta, or '' when the session does not compact by itself. */
+function compactNote(r: { tokens?: number; output?: number; compactAt?: number }): string {
+  const left = compactHeadroom(r)
+  return left === undefined ? '' : `${fmtTokens(left)} to compact`
+}
+
+const num = (x: unknown): number | undefined => (typeof x === 'number' && Number.isFinite(x) ? x : undefined)
 
 export function reportPath(home: string, key: string): string {
   return `${stateDir(home)}/ctx/${key}.json`
@@ -19,7 +36,10 @@ export function parseReport(key: string, text: string): CtxReport | undefined {
   try {
     const r = JSON.parse(text) as Partial<CtxReport>
     if (typeof r.tokens !== 'number' || typeof r.window !== 'number' || typeof r.at !== 'number' || r.window <= 0) return undefined
-    return { key, tokens: r.tokens, window: r.window, at: r.at, model: typeof r.model === 'string' ? r.model : undefined }
+    return {
+      key, tokens: r.tokens, window: r.window, at: r.at, model: typeof r.model === 'string' ? r.model : undefined,
+      output: num(r.output), compactAt: num(r.compactAt),
+    }
   } catch {
     return undefined
   }
@@ -87,7 +107,7 @@ export function buildRows(input: {
   rows.push({
     id: 'main', label: input.agent, isMain: true, isSub: false,
     tokens: main?.tokens, window: main?.window,
-    meta: shortModel(main?.model) ?? '',
+    meta: [shortModel(main?.model), main ? compactNote(main) : ''].filter(Boolean).join(' · '),
     note: main?.tokens === undefined ? 'no response yet' : undefined,
   })
   for (const m of input.members) {
@@ -98,7 +118,8 @@ export function buildRows(input: {
       rows.push({
         id: m.name, label: shortName(m.name), isMain: false, isSub: false,
         tokens: r.tokens, window: r.window,
-        meta: [shortModel(r.model) ?? cli, age > STALE_MS ? fmtAge(age) : ''].filter(Boolean).join(' · '),
+        // The age first: on a narrow pane it is what says the figures are old.
+        meta: [shortModel(r.model) ?? cli, age > STALE_MS ? fmtAge(age) : '', compactNote(r)].filter(Boolean).join(' · '),
       })
     } else {
       const isClaude = /^claude(-code)?$/.test(m.cli ?? '')

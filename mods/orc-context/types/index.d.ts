@@ -22,12 +22,16 @@ export type CtxReport = {
   /** The model's context window. */
   window: number
   model?: string
+  /** Output tokens of that response: the next request carries them too. */
+  output?: number
+  /** The token count at which that session compacts by itself; absent when it does not. */
+  compactAt?: number
   /** When it was written, in ms since the epoch. */
   at: number
 }
 
 /** The orchestrator's own window. */
-export type MainCtx = { tokens?: number; window: number; model?: string }
+export type MainCtx = { tokens?: number; window: number; model?: string; output?: number; compactAt?: number }
 
 export type SubCtxStatus = 'working' | 'blocked' | 'idle' | 'done' | 'failed'
 

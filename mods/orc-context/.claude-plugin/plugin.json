@@ -1,6 +1,6 @@
 {
   "name": "orc-context",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Claude Code only: the context each agent of an hcorc/herdorc orchestrator has used, in one pane; Claude Code role panes report their own.",
   "author": {
     "name": "herdr-orchestrators"

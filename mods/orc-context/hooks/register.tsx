@@ -10,8 +10,8 @@ import { agentOf, ctxKey, pollRoster, whereAmI } from './roster'
 // earlier version stored, which outlives a reload. Exported for the tests.
 export const agentAtom = atom({ plugin: 'orc-context', key: 'agent' } as const, null as string | null)
 export const membersAtom = atom({ plugin: 'orc-context', key: 'members' } as const, [] as Member[], { shape: 'members-1' })
-export const panesAtom = atom({ plugin: 'orc-context', key: 'panes' } as const, [] as CtxReport[], { shape: 'panes-1' })
-export const mainAtom = atom({ plugin: 'orc-context', key: 'main' } as const, null as MainCtx | null, { shape: 'main-1' })
+export const panesAtom = atom({ plugin: 'orc-context', key: 'panes' } as const, [] as CtxReport[], { shape: 'panes-2' })
+export const mainAtom = atom({ plugin: 'orc-context', key: 'main' } as const, null as MainCtx | null, { shape: 'main-2' })
 export const subsAtom = atom({ plugin: 'orc-context', key: 'subs' } as const, [] as SubCtx[], { shape: 'subs-1' })
 
 const PANE = 'orc-context'
@@ -33,16 +33,34 @@ const cfg: {
   isPolling: boolean
   /** This session's own report file, when it runs inside an hc/herdr pane (null: none). */
   reportTo?: string | null
-  lastReported?: number
+  /** The figures last written, so an unchanged step writes nothing. */
+  lastReported?: string
 } = { opt: {}, ticks: 0, isPolling: false }
 
-async function readMain($: EngineInterface, model?: string): Promise<void> {
+/** What one main-loop request settles: its model, its answer's size and the compaction threshold. */
+type Step = { model?: string; output?: number; compactAt?: number }
+
+/**
+ * The session's own auto-compaction threshold, read after each main-loop request
+ * (not on every poll): undefined when auto-compaction is off or the engine
+ * cannot say.
+ */
+async function compactAt($: EngineInterface): Promise<number | undefined> {
+  try {
+    const b = (await $.session.usage({ breakdown: 'summary' })).context.breakdown
+    return b?.isAutoCompactEnabled ? b.autoCompactThreshold : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function readMain($: EngineInterface, step?: Step): Promise<void> {
   const ctx = (await $.session.usage()).context
   const before = await read($, mainAtom)
-  const next: MainCtx = { tokens: ctx.tokens, window: ctx.window, model: model ?? before?.model }
-  if (before?.tokens !== next.tokens || before?.window !== next.window || before?.model !== next.model) {
-    await update($, mainAtom, () => next)
-  }
+  const next: MainCtx = step
+    ? { tokens: ctx.tokens, window: ctx.window, model: step.model ?? before?.model, output: step.output, compactAt: step.compactAt }
+    : { tokens: ctx.tokens, window: ctx.window, model: before?.model, output: before?.output, compactAt: before?.compactAt }
+  if (JSON.stringify(before) !== JSON.stringify(next)) await update($, mainAtom, () => next)
 }
 
 async function readPanes($: EngineInterface, members: readonly Member[]): Promise<void> {
@@ -138,15 +156,17 @@ async function reportFile($: EngineInterface): Promise<string | undefined> {
   return undefined
 }
 
-async function report($: EngineInterface, model: string | undefined): Promise<void> {
+async function report($: EngineInterface, step: Step): Promise<void> {
   // Settled on first use, so a reload (or a changed option) that sees no session start
   // still reports.
   if (cfg.reportTo === undefined) cfg.reportTo = (await reportFile($)) ?? null
   if (!cfg.reportTo) return
   const ctx = (await $.session.usage()).context
-  if (ctx.tokens === undefined || ctx.tokens === cfg.lastReported) return
-  cfg.lastReported = ctx.tokens
-  await $.fs.write(cfg.reportTo, JSON.stringify({ tokens: ctx.tokens, window: ctx.window, model, at: await $.clock.now() }))
+  if (ctx.tokens === undefined) return
+  const figures = JSON.stringify({ tokens: ctx.tokens, window: ctx.window, model: step.model, output: step.output, compactAt: step.compactAt })
+  if (figures === cfg.lastReported) return
+  cfg.lastReported = figures
+  await $.fs.write(cfg.reportTo, JSON.stringify({ ...JSON.parse(figures), at: await $.clock.now() }))
 }
 
 export const register: Register = (on, options) => {
@@ -191,8 +211,12 @@ export const register: Register = (on, options) => {
     const result = yield* next(e)
     const u = result.usage
     if (e.agentId === undefined) {
-      await report($, u?.model)
-      if (cfg.where) await readMain($, u?.model)
+      if (cfg.reportTo === undefined) cfg.reportTo = (await reportFile($)) ?? null
+      if (cfg.reportTo || cfg.where) {
+        const step: Step = { model: u?.model, output: u?.output_tokens, compactAt: await compactAt($) }
+        await report($, step)
+        if (cfg.where) await readMain($, step)
+      }
     } else if (cfg.where && u) {
       const id = e.agentId
       const tokens = stepTokens(u)

@@ -52,5 +52,31 @@ check "skills toasts: one global signature, under a project copy too" "node --in
 ln -s "$T/nowhere" "$T/proj/.claude/skills/broken"; mkdir -p "$T/proj/.claude/skills/odd/SKILL.md"
 check "broken links and SKILL.md folders are skipped" "$ORC skills --json | j 'assert all(\"broken\" not in x[\"path\"] and \"/odd/\" not in x[\"path\"] for x in d[\"skills\"])'"
 
+# A skill's references: its References section, any `references/` or `../` path in
+# SKILL.md, and the Markdown links of its reference files. Other `.md` names in the
+# body are files of the user's project (plan.md, checks.md), not the skill's.
+check "shared skill references resolve relative to the file that names them" "python3 -c '
+import os, re, glob
+LINK = r\"\\]\\(([^)\\s]+)\\)\"
+TICK = r\"\`([\\w./-]+\\.md)\`\"
+def target(ref):
+    ref = ref.split(\"#\")[0]
+    return None if not ref.endswith(\".md\") or re.match(r\"\\w+://\", ref) else ref
+broken = []
+def look(base, name, refs):
+    for ref in sorted(set(filter(None, map(target, refs)))):
+        if not os.path.exists(os.path.join(base, ref)): broken.append(f\"{name}: {ref}\")
+for skill in sorted(glob.glob(\"$R/shared/skills/*/SKILL.md\")):
+    base = os.path.dirname(skill); name = os.path.basename(base)
+    text = open(skill, encoding=\"utf-8\").read()
+    m = re.search(r\"^## References\\n([\\s\\S]*?)(?=^## |\\Z)\", text, re.M)
+    refs = re.findall(LINK, m.group(1)) + re.findall(TICK, m.group(1)) if m else []
+    refs += [r for r in re.findall(LINK, text) + re.findall(TICK, text) if r.startswith((\"references/\", \"../\"))]
+    look(base, name + \"/SKILL.md\", refs)
+    for doc in sorted(glob.glob(os.path.join(base, \"references\", \"*.md\"))):
+        look(os.path.dirname(doc), name + \"/references/\" + os.path.basename(doc), re.findall(LINK, open(doc, encoding=\"utf-8\").read()))
+assert not broken, broken
+'"
+
 echo "skills: pass=$pass fail=$fail"
 [ "$fail" = 0 ]
