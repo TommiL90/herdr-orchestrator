@@ -342,9 +342,13 @@ tests/                   test_install.sh, test_skills.sh, test_runtime.sh, test_
   against upstream; `--update` refreshes it.
 - Tests: `bash tests/test_install.sh`, `test_skills.sh` and
   `test_runtime.sh` need nothing. `test_guard.sh`, `test_orc_herdr.sh` and
-  `test_orc_hc.sh` need `herdr` / Herdr desktop and use isolated sessions
-  (Herdr desktop has none: `test_orc_hc.sh` works in a temporary space it
-  closes). `claude plugin test mods/<mod>` tests a Claude Code mod. `node --test herdr/plugins/orc-flow/test/` tests
+  `test_orc_hc.sh` need `herdr` / Herdr desktop and use isolated sessions.
+  The desktop suite opens a temporary window and checks that its terminal
+  process, tabs and role mapping survive a Core restart. Pass
+  `--core /path/to/herdr-core` to test a release binary and optionally
+  `--profile ~/.config/herdr-app --layout my-layout --check-mod my-mod` to
+  exercise a copy of an installed layout and check an optional mod.
+  `claude plugin test mods/<mod>` tests a Claude Code mod. `node --test herdr/plugins/orc-flow/test/` tests
   the orc-flow plugin and needs nothing but Node.js 22.13 or newer.
 
 ## License

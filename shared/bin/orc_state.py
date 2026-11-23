@@ -19,7 +19,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-STATE_DIR = Path(os.path.expanduser("~/.local/state/orc"))
+# The desktop integration test can reuse a terminal address in another Core session.
+STATE_DIR = Path(os.environ.get("ORC_TEST_STATE_DIR") or os.path.expanduser("~/.local/state/orc"))
 
 
 def safe(text):

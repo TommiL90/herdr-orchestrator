@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
-# Integration test for shared/bin/orc.py (hcorc backend) against the real
-# herdr-app window: Herdr desktop has no isolated session to test in. It creates
-# a temporary space WITHOUT moving focus, treats that space's root terminal as
-# the orchestrator, and closes the space at the end (its children end with it).
-# It only ever stops terminals it created, by the address hc gave it, and removes
-# the phase file it wrote. No agent CLI is launched.
+# Integration test for hcorc in a disposable herdr-app and Core session.
+# Optional: --core /path/to/herdr-core --profile ~/.config/herdr-app --layout my-layout
+# No agent CLI is launched.
 set -u
 cd "$(dirname "$0")/.."
-# orc.py --as records the calling CLI session as an orchestrator: keep that out of real state.
-export ORC_LEADS="$(mktemp)"
+if [ -z "${ORC_HC_TEST_ROOT:-}" ]; then
+  exec python3 tests/run_orc_hc.py "$@"
+fi
+: "${HC_SESSION:?}" "${HERDR_APP_HOME:?}" "${ORC_TEST_STATE_DIR:?}" "${ORC_LEADS:?}"
 ORC=shared/bin/orc.py
 pass=0; fail=0
 check() { if eval "$2"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1"; fi; }
 
-out=$(herdr-app do space.new --name orc-test --focus false)
+out=$(herdr-app do space.new --name orc-test)
 SP=$(echo "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin)["space"])')
 ROOT=$(echo "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin)["terminal"])')
 export HC_TERMINAL_ID=$ROOT CLAUDE_CODE_AGENT=hcorc
+PHASE_FILE="$ORC_TEST_STATE_DIR/phase-hcorc-$ROOT.json"
 FOREIGN=
 cleanup() {
   [ -n "$FOREIGN" ] && { hc kill "$FOREIGN" >/dev/null 2>&1; hc rm "$FOREIGN" >/dev/null 2>&1; }
   herdr-app do space.close --id "$SP" --confirmed true >/dev/null 2>&1
-  rm -f ~/.local/state/orc/phase-hcorc-"$ROOT".json
 }
 trap cleanup EXIT
 sleep 1
@@ -69,7 +68,7 @@ check "unknown role: rejected, no terminal created" "[ $RC != 0 ] && [ $BEFORE =
 
 # 5. a name taken by a terminal that is not ours -> reported, not reused
 #    Skipped when the user already has a jd-judge-a: the test must not touch it.
-if hc ls --json | python3 -c "import json,sys;sys.exit(any(t.get('name','').startswith('jd-judge') for t in json.load(sys.stdin)['terminals']))"; then
+if hc ls --json | python3 -c "import json,sys;sys.exit(any((t.get('name') or '').startswith('jd-judge') for t in json.load(sys.stdin)['terminals']))"; then
   FOREIGN=$(hc run --bg --json --no-parent --no-notify --name jd-judge-a -- sleep 120 | python3 -c 'import json,sys;print(json.load(sys.stdin)["address"])')
   J=$($ORC panes judges)
   check "foreign judge-a reported as taken" "echo '$J' | python3 -c 'import json,sys;d=json.load(sys.stdin);assert [t[\"name\"] for t in d[\"taken_by_others\"]]==[\"jd-judge-a\"] and [c[\"name\"] for c in d[\"created\"]]==[\"jd-judge-b\"], d'"
@@ -88,23 +87,34 @@ for s in json.load(sys.stdin)['spaces']:
 BEFORE=$(own_tab_name)
 $ORC phase researching >/dev/null
 echo '{"agent_type":"hcorc","tool_name":"Read","tool_input":{"file_path":"/x"}}' | $ORC phase --hook
-check "explicit survives inferred exploring" "grep -q researching ~/.local/state/orc/phase-hcorc-$ROOT.json"
+check "explicit survives inferred exploring" "grep -q researching \"\$PHASE_FILE\""
 echo '{"agent_type":"hcorc","tool_name":"Edit","tool_input":{"file_path":"/x/y.py"}}' | $ORC phase --hook
-check "strong inferred replaces explicit" "grep -q implementing ~/.local/state/orc/phase-hcorc-$ROOT.json"
+check "strong inferred replaces explicit" "grep -q implementing \"\$PHASE_FILE\""
+if [ -d "$HERDR_APP_HOME/mods/orc-panes" ] && ! herdr-app commands | grep -q '"pane.rename"'; then
+  check "phase reaches the Core label read by orc-panes" "hc get '$ROOT' --json | python3 -c 'import json,sys; assert json.load(sys.stdin)[\"labels\"][\"orc.phase\"] == \"hcorc · implementing\"'"
+fi
 $ORC phase clear >/dev/null
 check "tab name untouched by phase" "[ \"\$(own_tab_name)\" = '$BEFORE' ]"
 if herdr-app commands | grep -q '"pane.rename"'; then
   check "status: indicator active" "$ORC status | grep -q 'phase indicator: active (pane name)'"
 else  # without pane.rename the orc-panes mod shows it: an app home of the test's own, with and without it
-  APPHOME=$(mktemp -d)
+  APPHOME="$ORC_HC_TEST_ROOT/header-check"
+  mkdir -p "$APPHOME"
   check "status: indicator inactive without orc-panes" "HERDR_APP_HOME=$APPHOME $ORC status | grep -q 'phase indicator: inactive'"
   mkdir -p "$APPHOME/mods/orc-panes"
   check "status: indicator in the pane header with orc-panes" "HERDR_APP_HOME=$APPHOME $ORC status | grep -q 'phase indicator: active (pane header)'"
-  rm -rf "$APPHOME"
 fi
-rm -f ~/.local/state/orc/phase-hcorc-$ROOT.json
 
-# 7. status runs
+# 7. A Core restart keeps the shell process, pane roles and desktop mapping.
+terminal_pid() { hc get "$ROOT" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["pid"] or "")'; }
+PID_BEFORE=$(terminal_pid)
+check "Core restarts" "hc server restart --json >/dev/null"
+check "root process survives restart" "[ -n '$PID_BEFORE' ] && [ \"\$(terminal_pid)\" = '$PID_BEFORE' ]"
+for _ in $(seq 1 20); do [ "$(own_tab_name)" = "$BEFORE" ] && break; sleep 0.25; done
+check "desktop still maps the root to its tab" "[ \"\$(own_tab_name)\" = '$BEFORE' ]"
+check "roles survive restart" "$ORC role gentle-ai-worker | python3 -c 'import json,sys; assert json.load(sys.stdin)[\"panes\"][0][\"mine\"]'"
+
+# 8. status runs
 $ORC status | head -8
 
 echo "orc(hc): pass=$pass fail=$fail"
