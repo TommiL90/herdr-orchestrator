@@ -1,6 +1,6 @@
 {
   "name": "orc-cache",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Prompt-cache meter for the hcorc/herdorc orchestrators: cache read share and countdown above the prompt, the ODD phase, a guard against waits that outlast the cache, optional keep-alive pings while a wait runs, and a checkpoint hint when the context grows large.",
   "author": {
     "name": "herdr-orchestrators"

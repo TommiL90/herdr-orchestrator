@@ -69,14 +69,19 @@ test('the phase file matches orc.py', async () => {
     .toBe('/h/.local/state/orc/phase-herdorc-review-w1_p1.json')
 })
 
-const engine = (on: Parameters<TestBody>[1], agent: string) => {
+/** What the Bash tool answers beneath the mod. */
+const ran = { result: {} }
+const backgrounded = { result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' } }
+
+const engine = (on: Parameters<TestBody>[1], agent: string, tool: () => unknown = () => ran) => {
   mock.env(on, { CLAUDE_CODE_AGENT: agent, HOME: '/h', HC_TERMINAL_ID: 't7' })
-  mock.clock(on, { now: 1_000_000 })
+  const clock = mock.clock(on, { now: 1_000_000 })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [] } }) as never)
   on('settings.read', () => ({ value: {} }) as never)
   on('fs.read', () => ({ value: '{"phase": "implementing", "source": "inferred"}' }) as never)
-  on('tool.call', () => ({ result: {} }) as never)
+  on('tool.call', () => tool() as never)
+  return clock
 }
 
 test('in an hcorc session a wait longer than the 5m cache is sent back with a shorter timeout', async ($, on) => {
@@ -99,9 +104,12 @@ test('keep-alive pings only while they cost less than the rewrite they prevent',
   // a ping reads the prefix (0.1x); a lapse writes it again (1.25x for 5m, 2x for 1h)
   expect(warmBudget('5m')).toBe(11)
   expect(warmBudget('1h')).toBe(19)
-  expect(warmSpanMs('5m')).toBe(12 * 300_000)
-  expect(suggestedTimeout('hc', '5m', warmSpanMs('5m'))).toBe('--timeout 3570')
-  expect(suggestedTimeout('herdr', '5m', warmSpanMs('5m'))).toBe('--timeout 3570000')
+  // from a fresh entry: its 300 s, then 270 s per ping (each fires 30 s before the lapse)
+  expect(warmSpanMs('5m')).toBe(300_000 + 11 * 270_000)
+  expect(warmSpanMs('5m', 100_000, 2)).toBe(100_000 + 2 * 270_000)
+  expect(warmSpanMs('5m', 100_000, 0)).toBe(100_000)
+  expect(suggestedTimeout('hc', '5m', warmSpanMs('5m'))).toBe('--timeout 3240')
+  expect(suggestedTimeout('herdr', '5m', warmSpanMs('5m'))).toBe('--timeout 3240000')
 })
 
 test('keep-alive fires just before the entry lapses, during a pending wait, within budget', async () => {
@@ -117,6 +125,9 @@ test('keep-alive fires just before the entry lapses, during a pending wait, with
   expect(shouldWarm(sample(0, 5_000, 0), '5m', justBefore, pending, 20_000)).toBe(false) // small prompt
   expect(shouldWarm(sample(0, 0, 0, 90_000), '5m', justBefore, pending, 20_000)).toBe(false) // no cache in use
   expect(shouldWarm(null, '5m', justBefore, pending, 20_000)).toBe(false)
+  // 29 s left: a wait that ends in 2 s leaves the next request time to read the entry
+  expect(shouldWarm(s, '5m', justBefore, { ...pending, until: justBefore + 2_000 }, 20_000)).toBe(false)
+  expect(shouldWarm(s, '5m', justBefore, { ...pending, until: justBefore + 26_000 }, 20_000)).toBe(true)
 })
 
 test('a fork renewed the entry when it read most of the prefix', async () => {
@@ -162,11 +173,81 @@ test('with warm on, a pending wait gets one keep-alive fork just before the cach
   expect(forks).toBe(1)
 })
 
+/** The main loop's last request, as the state holds it; `last.value` is what a ping renewed. */
+const seedLast = (on: Parameters<TestBody>[1], s: unknown) => {
+  const last = { value: s, version: 1 }
+  on('state.get', { plugin: 'orc-cache', key: 'last' }, () => ({ value: last }) as never)
+  on('state.set', { plugin: 'orc-cache', key: 'last' }, (_, e) => {
+    last.value = (e as { value: unknown }).value
+    last.version += 1
+    return { value: { isSet: true, version: last.version } } as never
+  })
+  return last
+}
+
+const forkCounter = (on: Parameters<TestBody>[1]) => {
+  const n = { forks: 0 }
+  on('model.fork', () => {
+    n.forks += 1
+    return { value: { isAnswered: true, text: 'ok', usage: { input_tokens: 20, output_tokens: 1, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 0 } } } as never
+  })
+  return n
+}
+
 test('with warm on, the wait guard allows waits up to the keep-alive span', { options: { warm: 'on' } }, async ($, on) => {
   engine(on, 'hcorc')
+  seedLast(on, sample(1_000_000, 90_000, 0)) // a fresh 5m entry: 300 s + 11 pings x 270 s
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const allowed = JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'hc wait --children any --timeout 1800' }))
+  const allowed = JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'hc wait --children any --timeout 3240' }))
   expect(allowed).not.toContain('orc-cache')
-  const denied = JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'hc wait --children any --timeout 7200' }))
-  expect(denied).toContain('--timeout 3570')
+  const denied = JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'hc wait --children any --timeout 3300' }))
+  expect(denied).toContain('--timeout 3240')
+})
+
+test('with warm on but no entry to renew, the guard keeps to the cache lifetime', { options: { warm: 'on' } }, async ($, on) => {
+  engine(on, 'hcorc')
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const denied = JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'hc wait --children any --timeout 1800' }))
+  expect(denied).toContain('--timeout 270')
+})
+
+test('a background wait refused before it ran never pings', { options: { warm: 'on' } }, async ($, on) => {
+  const clock = engine(on, 'hcorc', () => ({ deny: 'not now' }))
+  seedLast(on, sample(750_000, 90_000, 0)) // 50 s left on a 5m entry
+  const n = forkCounter(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  // Refused before it ran: nothing to keep warm.
+  await $.tool.call({ tool: 'Bash', command: 'hc wait --children any --timeout 900', run_in_background: true })
+  await clock.advance(30_000)
+  expect(n.forks).toBe(0)
+})
+
+test('a running background wait keeps the entry warm until its task ends', { options: { warm: 'on' } }, async ($, on) => {
+  const clock = engine(on, 'hcorc', () => backgrounded)
+  const last = seedLast(on, sample(750_000, 90_000, 0)) // 50 s left on a 5m entry
+  const n = forkCounter(on)
+  on('classic.Stop', () => ({}) as never)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'hc wait --children any --timeout 900', run_in_background: true })
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'hc wait' }] })
+  await clock.advance(30_000) // 20 s left: inside the lead
+  expect(n.forks).toBe(1)
+  expect((last.value as { startedAt: number }).startedAt).toBeGreaterThan(1_000_000)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] }) // the task ended
+  await clock.advance(400_000)
+  expect(n.forks).toBe(1)
+})
+
+test('a keep-alive fork that throws stops the pings for this wait', { options: { warm: 'on' } }, async ($, on) => {
+  const clock = engine(on, 'hcorc', () => backgrounded)
+  seedLast(on, sample(750_000, 90_000, 0))
+  let forks = 0
+  on('model.fork', () => {
+    forks += 1
+    throw new Error('no network')
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'hc wait --children any --timeout 900', run_in_background: true })
+  await clock.advance(40_000)
+  expect(forks).toBe(1)
 })

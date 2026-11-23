@@ -130,7 +130,10 @@ its `warm` option (off by default) renews the cache during a wait with a
 one-word fork of the orchestrator's last request, 30 s before it lapses. Each
 ping costs a cache read (0.1x the prompt); it stops after the pings that still
 cost less than one rewrite (11 on a 5-minute cache, 19 on a 1-hour one), and
-with it on the guard allows waits up to that span. Another CLI's native cache
+with it on the guard allows waits up to what those pings cover from now (the
+entry's time left plus 270 s per ping on a 5-minute cache: 3,270 s from a
+fresh entry). A background wait pings only once its task runs, and stops when
+the task ends; a failed ping stops them for that wait. Another CLI's native cache
 keep-alive can join the same way, as an option, once it shows it saves more
 than it costs.
 

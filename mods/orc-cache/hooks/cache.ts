@@ -216,10 +216,17 @@ export function warmBudget(ttl: Ttl): number {
   return Math.floor((WRITE_PRICE[ttl] - READ_PRICE) / READ_PRICE + 1e-9)
 }
 
-/** The longest wait warming covers: every ping, plus the entry's own lifetime. */
-export function warmSpanMs(ttl: Ttl): number {
-  return (warmBudget(ttl) + 1) * ttlMs(ttl)
+/**
+ * The longest wait warming covers from now: the entry's time left, plus TTL - lead for
+ * each ping still in the budget (a ping renews the entry WARM_LEAD_MS before it lapses).
+ * A fresh 5m entry: 300 s + 11 x 270 s = 3,270 s.
+ */
+export function warmSpanMs(ttl: Ttl, leftMs: number = ttlMs(ttl), pingsLeft: number = warmBudget(ttl)): number {
+  return Math.max(0, leftMs) + Math.max(0, pingsLeft) * (ttlMs(ttl) - WARM_LEAD_MS)
 }
+
+/** Once a wait ends, the next request starts within this. */
+const NEXT_REQUEST_MS = 5_000
 
 export type WarmState = {
   /** The pending wait ends by then ($.clock ms); 0 when none is pending. */
@@ -230,12 +237,15 @@ export type WarmState = {
   busy: boolean
 }
 
-/** True when a ping now would keep a live entry from lapsing during a pending wait. */
+/**
+ * True when a ping now would keep a live entry from lapsing during a pending wait: one
+ * that ends early enough for the next request to read the entry needs no ping.
+ */
 export function shouldWarm(s: Sample | null, ttl: Ttl, now: number, w: WarmState, minTokens: number): boolean {
   if (!s || w.busy || now >= w.until || w.pings >= warmBudget(ttl)) return false
   if (s.read + s.write === 0 || promptTokens(s) < minTokens) return false
   const left = remainingMs(s, ttl, now)
-  return left > 0 && left <= WARM_LEAD_MS
+  return left > 0 && left <= WARM_LEAD_MS && w.until > now + left - NEXT_REQUEST_MS
 }
 
 /** A fork renewed the entry when it read most of the prefix from the cache. */

@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 
 import type { Policy, Sample, Ttl } from '../types'
 import {
@@ -32,17 +32,44 @@ const cfg: {
   phasePath?: string
   timer?: { cancel: () => void }
   ticks: number
-  /** Keep-alive: when the pending foreground and background waits end ($.clock ms; 0: none). */
+  /** Keep-alive: when the pending foreground wait ends ($.clock ms; 0: none). */
   fgUntil: number
-  bgUntil: number
+  /** Background waits by task id: each ends by its --timeout, or once Stop no longer lists its task. */
+  bg: Map<string, number>
   /** Pings since the last real request, a ping out, main-loop requests out. */
   pings: number
   warming: boolean
   inFlight: number
-} = { opt: {}, checkpointAt: 150_000, ticks: 0, fgUntil: 0, bgUntil: 0, pings: 0, warming: false, inFlight: 0 }
+} = { opt: {}, checkpointAt: 150_000, ticks: 0, fgUntil: 0, bg: new Map(), pings: 0, warming: false, inFlight: 0 }
 
 function warmOn(): boolean {
   return cfg.opt.warm === 'on'
+}
+
+/** When the last pending wait ends ($.clock ms; 0 or past: none), dropping background waits past theirs. */
+function pendingUntil(t: number): number {
+  let until = cfg.fgUntil
+  for (const [id, end] of cfg.bg) {
+    if (end <= t) cfg.bg.delete(id)
+    else until = Math.max(until, end)
+  }
+  return until
+}
+
+/** No more pings for the waits pending now. */
+function stopWarming(): void {
+  cfg.fgUntil = 0
+  cfg.bg.clear()
+}
+
+/**
+ * A wait that runs on in the background (asked for, or moved there with ctrl+b) keeps
+ * the pings going under its task id; a denied or failed call started nothing.
+ */
+function trackBackground(res: ToolCallResult<'Bash'>, until: number): void {
+  if (res.deny !== undefined || res.isError === true) return
+  const id = (res.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
+  if (typeof id === 'string' && id) cfg.bg.set(id, until)
 }
 
 /**
@@ -56,19 +83,25 @@ async function maybeWarm($: EngineInterface): Promise<void> {
   const p = await read($, policy)
   if (!s || !p) return
   const t = await $.clock.now()
-  const w = { until: Math.max(cfg.fgUntil, cfg.bgUntil), pings: cfg.pings, busy: cfg.warming || cfg.inFlight > 0 }
+  const w = { until: pendingUntil(t), pings: cfg.pings, busy: cfg.warming || cfg.inFlight > 0 }
   if (!shouldWarm(s, p.ttl, t, w, TOAST_MIN_TOKENS)) return
   cfg.warming = true
   try {
-    const r = await $.model.fork({ prompt: KEEPALIVE_PROMPT })
+    let r: Awaited<ReturnType<typeof $.model.fork>>
+    try {
+      r = await $.model.fork({ prompt: KEEPALIVE_PROMPT })
+    } catch (err) {
+      stopWarming() // left alone, the next tick would try again, every second
+      $.ui.toast(`Cache keep-alive failed (${err instanceof Error ? err.message : String(err)}); stopped for this wait`)
+      return
+    }
     if (r.isAnswered && renewed(s, r.usage.cache_read_input_tokens)) {
       cfg.pings += 1
       // Renewed from the ping's start; a real request recorded meanwhile wins.
       await update($, last, cur => (cur && cur.startedAt === s.startedAt ? { ...cur, startedAt: t } : cur))
       return
     }
-    cfg.fgUntil = 0 // the entry is gone or unreachable: no more pings for this wait
-    cfg.bgUntil = 0
+    stopWarming() // the entry is gone or unreachable: no more pings for this wait
     if (!r.isAnswered && r.reason === 'nothing-to-fork') return
     $.ui.toast(r.isAnswered
       ? `Cache keep-alive read ${fmtTokens(r.usage.cache_read_input_tokens)} of ${fmtTokens(promptTokens(s))} tokens: the entry had lapsed; stopped for this wait`
@@ -199,6 +232,14 @@ export const register: Register = (on, options) => {
     await fromClassic($, e)
     return next(e)
   }).catch(($, e, next) => next(e))
+  // The main loop stops: a background wait whose task is no longer in flight has ended.
+  on('classic.Stop', async ($, e, next) => {
+    if (e.agent_id === undefined && Array.isArray(e.background_tasks)) {
+      const live = new Set(e.background_tasks.map(task => task.id))
+      for (const id of cfg.bg.keys()) if (!live.has(id)) cfg.bg.delete(id)
+    }
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') {
@@ -243,10 +284,13 @@ export const register: Register = (on, options) => {
     const p = (await read($, policy)) ?? (await refreshPolicy($))
     const s = await read($, last)
     const warm = warmOn()
-    const span = warm ? warmSpanMs(p.ttl) : ttlMs(p.ttl)
+    const left = s ? remainingMs(s, p.ttl, await $.clock.now()) : 0
+    // Pings renew only a live entry worth pinging (shouldWarm's rules), from the budget left.
+    const covered = warm && s !== null && left > 0 && promptTokens(s) >= TOAST_MIN_TOKENS
+    const span = covered ? warmSpanMs(p.ttl, left, warmBudget(p.ttl) - cfg.pings) : ttlMs(p.ttl)
     if (opt.waitGuard !== 'off' && wait.ms > span - WAIT_MARGIN_MS) {
       const size = s ? `${fmtTokens(promptTokens(s))} tokens` : 'the whole conversation'
-      const what = warm
+      const what = covered
         ? `longer than keep-alive covers (${warmBudget(p.ttl)} pings on the ${p.ttl} prompt cache, ${p.source})`
         : `longer than the ${p.ttl} prompt cache (${p.source})`
       const why = `this ${wait.tool} wait can block for ${fmtClock(wait.ms)}, ${what}, so the next request would write ${size} to the cache again.`
@@ -254,24 +298,22 @@ export const register: Register = (on, options) => {
         return { deny: `${$.plugin.name}: ${why} Run it again with ${suggestedTimeout(wait.tool, p.ttl, span)} or less; a timeout is a check-in, so wait again after it.` }
       }
       $.ui.toast(`Wait of ${fmtClock(wait.ms)} outlasts the ${p.ttl} cache`)
-    } else if (s && !warm && opt.waitGuard !== 'off') {
-      const left = remainingMs(s, p.ttl, await $.clock.now())
+    } else if (s && !covered && opt.waitGuard !== 'off') {
       if (left > 0 && wait.ms > left - 5_000 && promptTokens(s) >= TOAST_MIN_TOKENS) {
         $.ui.toast(`This wait may outlast the cache (${fmtClock(left)} left)`)
       }
     }
-    if (!warm || !Number.isFinite(wait.ms)) return next(e)
-    const t = await $.clock.now()
-    if (e.run_in_background === true) { // pending until its own --timeout at the latest
-      cfg.bgUntil = Math.max(cfg.bgUntil, t + wait.ms)
-      return next(e)
-    }
-    cfg.fgUntil = t + wait.ms
+    if (!covered || !Number.isFinite(wait.ms)) return next(e)
+    const until = (await $.clock.now()) + wait.ms
+    if (e.run_in_background !== true) cfg.fgUntil = until
+    let res: ToolCallResult<'Bash'>
     try {
-      return await next(e)
+      res = await next(e)
     } finally {
-      cfg.fgUntil = 0
+      if (e.run_in_background !== true) cfg.fgUntil = 0
     }
+    trackBackground(res, until) // only once the task runs: a denied call never pings
+    return res
   }).catch(($, e, next) =>
     // A meter, not a safety guard: if it fails, the command runs as asked.
     next(e),
@@ -304,7 +346,7 @@ export const register: Register = (on, options) => {
         })
       }
       if (why) parts.push({ text: `miss: ${why}`, color: 'warning' })
-      if (warmOn() && t < Math.max(cfg.fgUntil, cfg.bgUntil)) {
+      if (warmOn() && t < pendingUntil(t)) {
         parts.push({ text: `keep-alive ${cfg.pings}/${warmBudget(p.ttl)}` })
       }
       const isLarge = agent !== null && size >= checkpointAt
