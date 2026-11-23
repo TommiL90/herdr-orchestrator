@@ -37,8 +37,20 @@ real session of the user also counts as "another session".
 Commands are found through shell wrappers (env, sudo, nohup, timeout, xargs, ...),
 subshells, `bash|sh|zsh -c '...'`, `eval`, `$( ... )` / backtick bodies and heredocs
 fed to a shell; redirections (`>/dev/null`, `2>&1`) are dropped. This is a
-best-effort parser, not a sandbox. Exit 2 blocks; exit 0 allows, or asks the user
-when stdout carries a PreToolUse "ask" decision.
+best-effort parser, not a sandbox.
+
+Every CLI with hooks runs it, `--format` naming the hook protocol (default claude):
+  claude    tool_input.command; exit 2 blocks, a PreToolUse "ask" decision asks
+  agy       toolCall.args.CommandLine of run_command; {"decision": "deny"|"force_ask"}
+  cursor    command (beforeShellExecution); {"permission": "deny"|"ask"}
+  codex     tool_input.command; exit 2 only
+  opencode  command, from the orc guard plugin; exit 2 only (the plugin throws)
+  grok      toolInput.command (Claude Code's hook format); {"decision": "deny"|"ask"}
+  pi        command, from the orc guard extension; {"decision": "deny"|"ask"}, which the
+            extension turns into a block or a confirmation dialog
+Where a hook can only refuse (codex, opencode), a call that needs the user's yes is
+refused with the instruction to ask, and runs once rerun with a leading
+`ORC_CONFIRMED=1` (accepted for those calls only, never for a blocked one).
 """
 import json
 import os
@@ -526,32 +538,95 @@ def check_command(command, agent, depth=0):
             ASKS.append(f"{agent} is about to run a command of the other multiplexer ({prog}): {e}")
 
 
-def orchestrator(data):
-    """hcorc/herdorc when the session's main agent or the calling agent is one, else ''."""
+FORMATS = ("claude", "codex", "agy", "cursor", "opencode", "grok", "pi")
+CONFIRMED_RE = re.compile(r"^\s*ORC_CONFIRMED=1\s+\S")
+RERUN = ("To run it yourself instead, ask the user with your ask tool, showing the exact command and why; "
+         "only after their yes, run it again unchanged except for a leading `ORC_CONFIRMED=1 `. "
+         "Never add it without their yes.")
+
+
+def command_of(data, fmt):
+    """The shell command in the hook input of `fmt`'s CLI, or None for a call that is not one."""
+    if fmt == "agy":
+        call = data.get("toolCall") or {}
+        if call.get("name") != "run_command":
+            return None
+        args = call.get("args") or {}
+        return args.get("CommandLine") or args.get("command") or ""
+    if fmt in ("cursor", "opencode", "pi"):
+        return data.get("command") or ""
+    if fmt == "grok":
+        tool_input = data.get("toolInput") or data.get("tool_input") or {}
+        return (tool_input.get("command") or "") if isinstance(tool_input, dict) else ""
+    return (data.get("tool_input") or {}).get("command") or ""
+
+
+def orchestrator(data, fmt="claude"):
+    """hcorc/herdorc when the session's main agent or the calling agent is one, else ''.
+    Outside Claude Code no variable names the agent: `orc.py --as <agent>` records the
+    CLI session it runs in, and the guard (started by that same CLI) looks it up."""
     for raw in (os.environ.get("CLAUDE_CODE_AGENT", ""), data.get("agent_type") or ""):
         name = raw.split(":")[-1]
         if name in AGENTS:
             return name
-    return ""
+    if fmt == "claude":
+        return ""
+    name = orc_state.lead_of_session()
+    return name if name in AGENTS else ""
+
+
+def answer(fmt, decision, reason):
+    """Tell `fmt`'s CLI to deny or ask; exits."""
+    reason = "orchestrator guard: " + reason
+    if fmt == "claude":
+        if decision == "deny":
+            print(reason, file=sys.stderr)
+            sys.exit(2)
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": reason}}))
+    elif fmt == "agy":
+        print(json.dumps({"decision": "deny" if decision == "deny" else "force_ask", "reason": reason}))
+    elif fmt == "cursor":
+        print(json.dumps({"permission": decision, "user_message": reason, "agent_message": reason}))
+    elif fmt == "grok":  # a deny in the JSON stands whatever the exit code; 2 says it too
+        print(json.dumps({"decision": decision, "reason": reason}))
+        sys.exit(2 if decision == "deny" else 0)
+    elif fmt == "pi":  # the extension blocks, or asks in pi's dialog
+        print(json.dumps({"decision": decision, "reason": reason}))
+    else:  # codex, opencode: a hook can only refuse, so asking is the agent's job
+        print(reason if decision == "deny" else f"{reason.rstrip('.')}. {RERUN}", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(0)
 
 
 def main():
+    fmt = "claude"
+    argv = sys.argv[1:]
+    if argv[:1] == ["--format"] and len(argv) > 1:
+        fmt = argv[1]
+    elif argv[:1] and argv[0].startswith("--format="):
+        fmt = argv[0].split("=", 1)[1]
+    if fmt not in FORMATS:
+        print(f"orchestrator guard: --format takes one of {', '.join(FORMATS)}", file=sys.stderr)
+        sys.exit(0)
     try:
         data = json.load(sys.stdin)
     except Exception:
         sys.exit(0)
-    agent = orchestrator(data)
+    if not isinstance(data, dict):
+        sys.exit(0)
+    command = command_of(data, fmt)
+    if not command or not MENTION_RE.search(command):
+        sys.exit(0)
+    agent = orchestrator(data, fmt)
     if not agent:
         sys.exit(0)
     try:
-        check_command((data.get("tool_input") or {}).get("command") or "", agent)
+        check_command(command, agent)
     except Blocked as e:
-        print(f"orchestrator guard: {e}", file=sys.stderr)
-        sys.exit(2)
-    if ASKS:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "ask",
-            "permissionDecisionReason": "orchestrator guard: " + " | ".join(dict.fromkeys(ASKS))}}))
+        answer(fmt, "deny", str(e))
+    if ASKS and not (fmt in ("codex", "opencode") and CONFIRMED_RE.match(command)):
+        answer(fmt, "ask", " | ".join(dict.fromkeys(ASKS)))
     sys.exit(0)
 
 

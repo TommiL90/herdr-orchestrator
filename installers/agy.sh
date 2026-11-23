@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install hcorc, herdorc and the ten roles into agy: main agents and subagents.
+# Install hcorc, herdorc and the ten roles into agy: main agents, subagents, the commands as skills, the guard hook.
 #
 #   installers/agy.sh                     for your user, in ~/.gemini/config
 #   installers/agy.sh --scope project [--project DIR]   in DIR/.agents (default: current dir)

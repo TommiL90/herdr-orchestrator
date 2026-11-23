@@ -1,5 +1,5 @@
 {
-  "_comment": "Third-party Herdr app mods that herdr-app/extras.py installs, each pinned to the commit whose code was reviewed. Order matters: herdr-nvim takes the Files slot and filetree then takes it over. Bump a ref only after reading the new code.",
+  "_comment": "Third-party Herdr app mods that herdr-app/extras.py installs, each pinned to the commit whose code was reviewed. Order matters: herdr-nvim takes the Files slot and filetree then takes it over; better-tabs takes the tab bar. Bump a ref only after reading the new code.",
   "mods": {
     "herdr-nvim": {
       "repo": "ChmaraX/herdr-nvim", "ref": "2905408e1985db1a319b466ba9873f40e29f5e7a", "license": "MIT",
@@ -41,6 +41,12 @@
         "ctrl-shift-g": "mod.open:agent-flow",
         "cmd-alt-g": {"command": "pane.split", "args": {"direction": "right", "mod": "agent-flow"}}
       }
+    },
+    "better-tabs": {
+      "repo": "munza/herdr-mods", "ref": "1abf4870adb4c3f7a71739db1e0c29493f5e3f95", "license": "Apache-2.0",
+      "about": "The tab bar: tabs drag to reorder, wrap onto more lines (the bar grows through the Skills panel's tabs-row) and name themselves after what runs in them, as real renames that keep a name you typed; a ⋮ menu holds panel buttons. Runs no programs and reaches no network.",
+      "copy": "better-tabs/mods/better-tabs",
+      "slot": "tabs"
     }
   }
 }

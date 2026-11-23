@@ -7,6 +7,8 @@
 #   bash tests/test_orc_herdr.sh --agent     # also launch claude (haiku) via ensure
 set -u
 cd "$(dirname "$0")/.."
+# orc.py --as records the calling CLI session as an orchestrator: keep that out of real state.
+export ORC_LEADS="$(mktemp)"
 ORC=shared/bin/orc.py
 WITH_AGENT=${1:-}
 pass=0; fail=0

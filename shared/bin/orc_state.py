@@ -15,6 +15,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -164,3 +165,83 @@ def herdr_owned(state, panes, tabs):
         if members and all(pid in kept_panes for pid in members):  # none seen: herdr did not show it, not ours
             owned_tabs.add(tid)
     return set(kept_panes), owned_tabs, {"panes": kept_panes, "tabs": kept_tabs}
+
+
+# ------------------------------------------------------------ lead sessions
+# Hooks in CLIs other than Claude Code are not told which agent is running. The
+# orchestrator's own `orc.py --as <agent>` calls record it against the processes
+# above them (the CLI, and any helper it runs shells from), and the guard looks
+# for its own CLI among them. A process is named by pid and start time, so a
+# reused pid never matches. orc.py records the two nearest (a CLI may run shells from
+# a helper process), the guard looks up only its nearest: the CLI that runs hooks.
+# Looking further up would reach what many sessions share (an editor, an app).
+LEADS = Path(os.environ.get("ORC_LEADS") or STATE_DIR / "leads.json")  # ORC_LEADS: tests only
+_PASS = re.compile(r"^-?(sh|bash|zsh|fish|dash|ksh|tcsh|csh|nu|env|sudo|doas|nohup|timeout|gtimeout|"
+                   r"script|sandbox-exec|bwrap|rtk|uv|uvx|xargs|stdbuf|nice|caffeinate|"
+                   r"[Pp]ython[\d.]*)$")  # the shells and wrappers between a CLI and a command
+_STOP = re.compile(r"^-?(launchd|init|systemd|login|sshd|tmux|screen|zellij|herdr|herdr-core|hc|"
+                   r"herdr-app|Herdr|Terminal|iTerm2|ghostty|wezterm-gui|kitty|alacritty)$")
+
+
+def _processes():
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,lstart=,comm="], capture_output=True, env={**os.environ, "LC_ALL": "C"},
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    procs = {}
+    for line in out.splitlines():
+        parts = line.split(None, 7)
+        if len(parts) < 8:
+            continue
+        pid, ppid = int(parts[0]), int(parts[1])
+        procs[pid] = (ppid, " ".join(parts[2:7]), os.path.basename(parts[7].strip()))
+    return procs
+
+
+def session_processes(limit, start=None):
+    """The `pid:start` of the first `limit` processes above `start` (default: this one's
+    parent) that are neither a shell nor a wrapper, short of a multiplexer, terminal or init."""
+    procs = _processes()
+    out, pid, seen = [], start or os.getppid(), set()
+    while pid in procs and pid not in seen and pid > 1 and len(out) < limit:
+        seen.add(pid)
+        ppid, started, name = procs[pid]
+        if _STOP.match(name):
+            break
+        if not _PASS.match(name):
+            out.append(f"{pid}:{started}")
+        pid = ppid
+    return out
+
+
+def record_lead(agent):
+    """Remember that the CLI session above this process runs `agent` (an orchestrator)."""
+    keys = session_processes(2)
+    if not keys:
+        return
+    alive = {f"{pid}:{p[1]}" for pid, p in _processes().items()}
+    with locked(LEADS):
+        try:
+            data = json.loads(LEADS.read_text())
+        except (OSError, ValueError):
+            data = {}
+        data = {k: v for k, v in data.items() if k in alive} if isinstance(data, dict) else {}
+        for k in keys:
+            data[k] = agent
+        write_atomic(LEADS, json.dumps(data, indent=1) + "\n")
+
+
+def lead_of_session():
+    """The orchestrator the calling CLI session runs, as recorded by record_lead, or ''."""
+    try:
+        data = json.loads(LEADS.read_text())
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for k in session_processes(1):
+        if data.get(k):
+            return data[k]
+    return ""
+

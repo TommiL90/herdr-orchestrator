@@ -1,5 +1,8 @@
 import sys, importlib.util
 from pathlib import Path
+if len(sys.argv) != 3:
+    sys.exit("usage: verify-port-roles.py <scripts/port-roles.py> <empty output dir>\n"
+             "Reverse-applies port-roles.py's edits and checks they give back tomidev-shell's text.")
 spec = importlib.util.spec_from_file_location("p", sys.argv[1]); p = importlib.util.module_from_spec(spec); spec.loader.exec_module(p)
 out = Path(sys.argv[2]); ok = True
 for role in p.ROLES:

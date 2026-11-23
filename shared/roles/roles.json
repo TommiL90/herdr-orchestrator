@@ -109,7 +109,7 @@
   },
   {
     "name": "review-risk",
-    "description": "R1 Risk reviewer \u2014 security, privilege boundaries, data exposure, dependency risks, and merge-blocking vulnerabilities.",
+    "description": "R1 Risk reviewer — security, privilege boundaries, data exposure, dependency risks, and merge-blocking vulnerabilities.",
     "tools": [
       "Read",
       "Grep",
@@ -126,7 +126,7 @@
   },
   {
     "name": "review-readability",
-    "description": "R2 Readability reviewer \u2014 naming, complexity, intention, maintainability, review size, and context clarity.",
+    "description": "R2 Readability reviewer — naming, complexity, intention, maintainability, review size, and context clarity.",
     "tools": [
       "Read",
       "Grep",
@@ -143,7 +143,7 @@
   },
   {
     "name": "review-reliability",
-    "description": "R3 Reliability reviewer \u2014 behavior-first tests, coverage value, edge cases, determinism, contracts, and regressions.",
+    "description": "R3 Reliability reviewer — behavior-first tests, coverage value, edge cases, determinism, contracts, and regressions.",
     "tools": [
       "Read",
       "Grep",
@@ -160,7 +160,7 @@
   },
   {
     "name": "review-resilience",
-    "description": "R4 Resilience reviewer \u2014 fallbacks, retry/backoff, graceful degradation, observability, load, rollback, and SLO risks.",
+    "description": "R4 Resilience reviewer — fallbacks, retry/backoff, graceful degradation, observability, load, rollback, and SLO risks.",
     "tools": [
       "Read",
       "Grep",

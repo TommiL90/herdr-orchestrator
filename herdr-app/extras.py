@@ -12,8 +12,11 @@ clone's dist/herdr-app-extras/, and then:
 - a mod with its own installer (herdr-nvim, gitview) runs that installer from
   the pinned source, with the release version pinned too. Those installers
   download their binary, check its SHA-256 and edit the shown layout;
-- keys are added to keys.json only where they are free, and filetree takes
-  the Files slot of the layout the Skills panel uses (or your own shown one).
+- keys are added to keys.json only where they are free; filetree takes the
+  Files slot and better-tabs the tab bar of the layout the Skills panel uses
+  (or your own shown one);
+- while a mod's own installer edits the layout, the orchestrator's pane names
+  (orc-panes) give the pane header back, then draw through the one it leaves.
 
 Usage:
   python3 herdr-app/extras.py                     all of them
@@ -156,8 +159,9 @@ def install_copy(name, m, hp, force, entry):
                 saved = True
             tmp.rename(built)
             published = True
-            if not I.linked(dst, built):
-                I.link(dst, built)
+            # Made again even where it already points there: Herdr's watcher doesn't
+            # look through the link, so only a new link loads the new build.
+            I.link(dst, built)
         except OSError as e:
             try:
                 if published:
@@ -212,53 +216,14 @@ def run_installer(name, m, which):
 
 # ------------------------------------------------------------------ keys
 def add_keys(name, keys, hp, entry):
-    path = hp / "keys.json"
-    data = I.herdr_json(path, None)
-    if data is None:
-        print(f"[{name}] keys not added: {path} is missing or not JSON (open Herdr once): "
-              + ", ".join(keys))
-        return
-    g = data.setdefault("global", {})
-    added, taken = [], []
-    for key, value in keys.items():
-        if key not in g:
-            g[key] = value
-            added.append(key)
-        elif g[key] != value:
-            taken.append(key)
-            continue
-        elif key not in entry.get("keys", {}):
-            continue  # the user bound it to the same action already: theirs, never removed by us
-        entry.setdefault("keys", {})[key] = value
-    if added:
-        backup = path.with_name(path.name + ".before-orc-extras")
-        if not backup.exists():
-            shutil.copy2(path, backup)
-        I.herdr_write(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-    if added or taken:
-        print(f"[{name}] keys: " + ", ".join(added or ["none added"])
-              + (f"; already bound to something else, left alone: {', '.join(taken)}" if taken else ""))
+    I.herdr_add_keys(name, keys, hp, entry, backup=".before-orc-extras")
 
 
 def remove_keys(hp, entry, names=None):
-    path = hp / "keys.json"
-    data = I.herdr_json(path, None)
-    ours = entry.get("keys", {})
-    drop = {k for n in (names or SPEC) for k in SPEC.get(n, {}).get("keys", {})} & set(ours)
-    if data is None or not drop:
-        return
-    g = data.get("global", {})
-    removed = [k for k in drop if g.get(k) == ours[k]]
-    for k in removed:
-        g.pop(k)
-    for k in drop:
-        ours.pop(k)
-    if removed:
-        I.herdr_write(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-        print(f"[keys] removed {', '.join(sorted(removed))}")
+    I.herdr_drop_keys(hp, entry, {k for n in (names or SPEC) for k in SPEC.get(n, {}).get("keys", {})})
 
 
-# ------------------------------------------------------------------ Files slot
+# ------------------------------------------------------------------ layout slots
 def layout_target(hp, manifest):
     """The layout to edit: the shown one if it is the person's own, else the one
     install.py put the Skills panel in. None when only a shipped one is shown."""
@@ -272,55 +237,78 @@ def layout_target(hp, manifest):
     return None
 
 
-def take_files_slot(name, hp, manifest, entry):
+# A slot is a layout block a mod takes over: `files_slot: true` (the Files slot of
+# the side panel) or `slot: "tabs"` (the tab bar). The block keeps its id, size and
+# window_drag; only its content changes, and the uninstall puts the old one back.
+SLOTS = {"files": "the Files slot", "tabs": "the tab bar"}
+
+
+def slot_of(m):
+    return "files" if m.get("files_slot") else m.get("slot")
+
+
+def take_slot(name, slot_id, hp, manifest, entry):
+    what = SLOTS[slot_id]
     target = layout_target(hp, manifest)
     if not target:
-        print(f"[{name}] Files slot not changed: the shown layout is one of Herdr's own. "
+        print(f"[{name}] {what} not changed: the shown layout is one of Herdr's own. "
               f"Run installers/herdr-app.sh first, or switch to your own layout, and rerun.")
         return
     path = hp / "layouts" / f"{target}.json"
     tree = I.herdr_json(path, None)
-    files = tree and I.herdr_find(tree, "files")
-    if not files:
-        print(f"[{name}] Files slot not changed: layout {target} has no `files` block")
+    block = tree and I.herdr_find(tree, slot_id)
+    if not block:
+        print(f"[{name}] {what} not changed: layout {target} has no `{slot_id}` block")
         return
-    want = {"mod": name}
-    panel = I.herdr_find(tree, "panel")
-    shipped_panel = I.herdr_find(I.herdr_json(hp / "layouts/main.json", {}), "panel")
-    width = shipped_panel and shipped_panel[0].get("size")
-    before = json.dumps(tree)
-    slot = entry.get("files_slot") if entry.get("files_slot", {}).get("layout") == target else None
+    key = f"{slot_id}_slot"
+    slot = entry.get(key) if entry.get(key, {}).get("layout") == target else None
     if slot is None:
-        slot = {"layout": target, "mod": name, "previous": files[0].get("content"),
-                "panel_size": panel and panel[0].get("size")}
-    files[0]["content"] = want
-    if panel and width:  # herdr-nvim narrows the panel for its own tree; filetree wants Herdr's width
-        panel[0]["size"] = width
+        slot = {"layout": target, "mod": name, "previous": block[0].get("content")}
+    before = json.dumps(tree)
+    block[0]["content"] = {"mod": name}
+    if slot_id == "files":
+        panel = I.herdr_find(tree, "panel")
+        shipped_panel = I.herdr_find(I.herdr_json(hp / "layouts/main.json", {}), "panel")
+        width = shipped_panel and shipped_panel[0].get("size")
+        slot.setdefault("panel_size", panel and panel[0].get("size"))
+        if panel and width:  # herdr-nvim narrows the panel for its own tree; filetree wants Herdr's width
+            panel[0]["size"] = width
     if json.dumps(tree) != before:
         I.herdr_write(path, json.dumps(tree, indent=2) + "\n")
-    entry["files_slot"] = slot
-    print(f"[{name}] holds the Files slot in layout {target}")
+    entry[key] = slot
+    print(f"[{name}] holds {what} in layout {target}")
 
 
-def give_back_files_slot(hp, entry):
-    slot = entry.pop("files_slot", None)
+def give_back_slot(hp, entry, slot_id):
+    slot = entry.pop(f"{slot_id}_slot", None)
     if not slot:
         return
     path = hp / "layouts" / f"{slot['layout']}.json"
     tree = I.herdr_json(path, None)
-    files = tree and I.herdr_find(tree, "files")
+    block = tree and I.herdr_find(tree, slot_id)
     mod = slot.get("mod", "filetree")
-    if not files or files[0].get("content") != {"mod": mod}:
+    if not block or block[0].get("content") != {"mod": mod}:
         return
     if slot.get("previous") is None:
-        files[0].pop("content", None)
+        block[0].pop("content", None)
     else:
-        files[0]["content"] = slot["previous"]
-    panel = I.herdr_find(tree, "panel")
+        block[0]["content"] = slot["previous"]
+    panel = slot_id == "files" and I.herdr_find(tree, "panel")
     if panel and slot.get("panel_size"):
         panel[0]["size"] = slot["panel_size"]
     I.herdr_write(path, json.dumps(tree, indent=2) + "\n")
-    print(f"[{mod}] gave the Files slot of layout {slot['layout']} back to {json.dumps(slot.get('previous'))}")
+    print(f"[{mod}] gave {SLOTS[slot_id]} of layout {slot['layout']} back to {json.dumps(slot.get('previous'))}")
+
+
+def run_wrapped(n, m, which, hp, manifest):
+    """A mod's own installer edits the layout: orc-panes gives the pane header back
+    while it runs (herdr-nvim adds its button only to Herdr's header) and then draws
+    through whatever header the layout shows."""
+    I.panes_hand_back(hp, manifest)
+    try:
+        return run_installer(n, m, which)
+    finally:
+        I.panes_take_back(hp, manifest)
 
 
 # ------------------------------------------------------------------ actions
@@ -352,7 +340,7 @@ def _install(names, dry, force):
             how = "run its installer" if "installer" in m else "link a patched build" if m.get("patch") else "link a build"
             print(f"[{n}] would fetch {m['repo']}@{m['ref'][:7]} and {how}"
                   + (f"; keys {', '.join(m['keys'])} where free" if m.get("keys") else "")
-                  + ("; take the Files slot" if m.get("files_slot") else ""))
+                  + (f"; take {SLOTS[slot_of(m)]}" if slot_of(m) else ""))
         return True
     manifest = I.load_manifest()
     key = manifest_key(hp)
@@ -361,7 +349,7 @@ def _install(names, dry, force):
     for n in names:
         m = SPEC[n]
         try:
-            done = run_installer(n, m, "installer") if "installer" in m else install_copy(n, m, hp, force, entry)
+            done = run_wrapped(n, m, "installer", hp, manifest) if "installer" in m else install_copy(n, m, hp, force, entry)
         except (OSError, RuntimeError, urllib.error.URLError) as e:
             print(f"[{n}] not installed: {e}")
             done = False
@@ -371,8 +359,8 @@ def _install(names, dry, force):
         entry.setdefault("extras", {})[n] = {"repo": m["repo"], "ref": m["ref"]}
         if m.get("keys"):
             add_keys(n, m["keys"], hp, entry)
-        if m.get("files_slot"):
-            take_files_slot(n, hp, manifest, entry)
+        if slot_of(m):
+            take_slot(n, slot_of(m), hp, manifest, entry)
     if entry.get("extras"):
         entry.update(clone=str(I.ROOT), agents=[], installed=now())
         manifest[key] = entry
@@ -399,14 +387,15 @@ def _uninstall(names, dry, explicit):
         print("[extras] would remove " + ", ".join(names))
         return True
     ok = True
-    if any(SPEC[n].get("files_slot") for n in names):
-        give_back_files_slot(hp, entry)
+    for slot_id in SLOTS:
+        if any(slot_of(SPEC[n]) == slot_id for n in names):
+            give_back_slot(hp, entry, slot_id)
     remove_keys(hp, entry, names)
     for n in names:
         m = SPEC[n]
         if "uninstaller" in m:
             try:
-                ok = run_installer(n, m, "uninstaller") and ok
+                ok = run_wrapped(n, m, "uninstaller", hp, manifest) and ok
             except (OSError, RuntimeError, urllib.error.URLError) as e:
                 print(f"[{n}] could not run its uninstaller: {e}")
                 ok = False

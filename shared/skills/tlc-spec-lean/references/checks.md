@@ -74,7 +74,7 @@ Proof: browser - reach the state, save `captures/admin.running.png`
 Checks that end in the same captured state name the same file. A state no capture draws gets no
 picture: its proof is a test, or `walk` when only a visit shows it. So does an existing screen the
 feature does not change, reached through the nav: the author's `**Walked:**` line names the visit.
-[SKILL.md](../SKILL.md) rule 9.
+[SKILL.md](../SKILL.md) rule 6.
 
 ```markdown
 **C41** - The nav still opens Items (AC 2)
@@ -114,7 +114,7 @@ forwards its arguments gets none of its own: a test over it re-asserts the frame
 
 The first line under the title is `Mutations: N`, 0 to 5, copied from the project's `AGENTS.md`
 (`mutations:`), `3` when it declares none. Screens take no mutation. What the count does and does
-not change: [SKILL.md](../SKILL.md) rule 6.
+not change: [SKILL.md](../SKILL.md) rule 5.
 
 ## Template: `.agents/designs/features/<feature>/checks.md`
 

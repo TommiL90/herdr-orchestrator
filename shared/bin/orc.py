@@ -16,6 +16,8 @@ Subcommands:
   phase <phase>|clear             set the ODD phase indicator (explicit)
   phase --hook                    PostToolUse hook: infer the phase from tool activity
   skills [--json]                 same-name skill conflicts: which copy is used, which it shadows
+  flow                            open the flow graph in a pane to the right of the orchestrator's
+                                  (hcorc: the agent-flow Herdr app mod; herdorc: the orc-flow plugin)
 
 The agent is taken from a leading `--as <agent>` (how install.py calls orc.py from
 CLIs other than Claude Code) or else $CLAUDE_CODE_AGENT (set by `claude --agent <name>`).
@@ -64,6 +66,7 @@ def _argv(harness, model, prompt):
         "agy": (["agy"] + (["--model", m] if m else []) + (["--prompt-interactive", prompt] if prompt else [])),
         "cursor-agent": (["cursor-agent"] + (["--model", m] if m else []) + ([prompt] if prompt else [])),
         "grok": (["grok"] + (["-m", m] if m else []) + ([prompt] if prompt else [])),
+        "pi": (["pi"] + (["--model", m] if m else []) + ([prompt] if prompt else [])),
         "td": (["td", "--"] + (["--model", m] if m else [])),  # prompt sent after readiness
     }
     if harness not in table:
@@ -71,8 +74,8 @@ def _argv(harness, model, prompt):
     return table[harness]
 
 HERDR_KIND = {"claude": "claude", "codex": "codex", "opencode": "opencode", "agy": "agy",
-              "cursor-agent": "cursor", "grok": "grok", "td": "pi"}
-PROMPT_AT_LAUNCH = {"claude", "codex", "opencode", "agy", "cursor-agent", "grok"}
+              "cursor-agent": "cursor", "grok": "grok", "pi": "pi", "td": "pi"}
+PROMPT_AT_LAUNCH = {"claude", "codex", "opencode", "agy", "cursor-agent", "grok", "pi"}
 
 
 def die(msg, code=1):
@@ -142,6 +145,14 @@ def free_name(role, taken):
 
 
 # ---------------------------------------------------------------- hc backend
+# The label orc-panes (herdr-app/mods/orc-panes/names.js PHASE) shows over a pane's name.
+PHASE_LABEL = "orc.phase"
+
+
+def herdr_app_home():
+    return os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
+
+
 class HcBackend:
     name = "hcorc"
 
@@ -272,16 +283,22 @@ class HcBackend:
 
     def phase_surface(self):
         """Where the ODD phase is shown, or None when this herdr-app cannot show it."""
-        return "pane name" if self.app_has("pane.rename") else None
+        if self.app_has("pane.rename"):
+            return "pane name"
+        return "pane header" if os.path.isdir(os.path.join(herdr_app_home(), "mods", "orc-panes")) else None
 
     def set_label(self, text):
-        """ODD phase indicator: the orchestrator's pane name. herdr-app versions without
-        pane.rename (0.1.16) show nothing; the indicator turns on by itself once it exists."""
-        if not self.phase_surface():
-            return
-        pane = self.my_pane_id()
-        if pane:
-            run(["herdr-app", "do", "pane.rename", "--pane", pane, "--name", text])
+        """ODD phase indicator: the orchestrator's pane name. herdr-app has no pane.rename
+        (0.1.x): with the orc-panes mod installed, the phase goes in this terminal's
+        PHASE_LABEL, which its pane header shows over the pane's name; an empty text
+        removes it. Without either, nothing shows."""
+        surface = self.phase_surface()
+        if surface == "pane name":
+            pane = self.my_pane_id()
+            if pane:
+                run(["herdr-app", "do", "pane.rename", "--pane", pane, "--name", text])
+        elif surface == "pane header":
+            run(["hc", "label", self.me, f"{PHASE_LABEL}={text}"])
 
 
 # ------------------------------------------------------------- herdr backend
@@ -672,14 +689,60 @@ def cmd_phase(argv):
 
 # ------------------------------------------------------------ skill conflicts
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
-PROJECT_SKILL_DIRS = (".claude/skills", ".agents/skills", ".opencode/skills", ".cursor/skills", ".codex/skills")
+PROJECT_SKILL_DIRS = (".claude/skills", ".agents/skills", ".opencode/skills", ".cursor/skills", ".codex/skills",
+                      ".grok/skills", ".pi/skills")
+
+
+def _flow_hc(b):
+    home = herdr_app_home()
+    if not os.path.isdir(os.path.join(home, "mods", "agent-flow")):
+        return {"opened": False, "error": f"the agent-flow mod is not installed in {home}",
+                "hint": "installers/herdr-app-extras.sh --only agent-flow"}
+    pane = b.my_pane_id()
+    if not pane:
+        return {"opened": False, "error": f"herdr-app shows no pane for terminal {b.me}"}
+    code, out, err = run(["herdr-app", "do", "pane.split", "--direction", "right", "--pane", pane,
+                          "--mod", "agent-flow"])
+    if code != 0 or '"error"' in out:
+        return {"opened": False, "error": (err or out).strip() or f"herdr-app exited {code}"}
+    return {"opened": True, "via": "agent-flow (Herdr app mod)", "beside": pane, "direction": "right"}
+
+
+def _flow_herdr(b):
+    data = run_json(["herdr", "plugin", "list", "--json"]) or {}
+    plugin = next((x for x in (data.get("result") or {}).get("plugins", []) if x.get("plugin_id") == "orc-flow"), None)
+    if not plugin:
+        return {"opened": False, "error": "the orc-flow plugin is not linked in this herdr",
+                "hint": "installers/herdr.sh"}
+    if not plugin.get("enabled", True):
+        return {"opened": False, "error": "the orc-flow plugin is disabled", "hint": "herdr plugin enable orc-flow"}
+    # What orc-flow's own open.sh does for its split action, beside my pane instead of the focused one.
+    # No --workspace: herdr 0.9.5 then drops --target-pane and refuses the split.
+    code, out, err = run(["herdr", "plugin", "pane", "open", "--plugin", "orc-flow", "--entrypoint", "graph",
+                          "--placement", "split", "--direction", "right", "--target-pane", b.me,
+                          "--cwd", plugin.get("plugin_root") or os.getcwd(),
+                          "--env", "ORC_FLOW_PLACEMENT=split", "--env", f"ORC_FLOW_ORIGIN={b.me}", "--no-focus"])
+    if code != 0 or '"error"' in out:
+        return {"opened": False, "error": (err or out).strip() or f"herdr exited {code}"}
+    return {"opened": True, "via": "orc-flow (herdr plugin)", "beside": b.me, "direction": "right"}
+
+
+def cmd_flow(argv):
+    """Open the flow graph beside the orchestrator's own pane, without taking the focus."""
+    b = backend()
+    result = _flow_hc(b) if isinstance(b, HcBackend) else _flow_herdr(b)
+    print(json.dumps(result, indent=1))
+    if not result["opened"]:
+        sys.exit(1)
 
 
 def user_skill_dirs():
     home = Path.home()
     return [home / ".claude/skills", home / ".agents/skills", home / ".gemini/config/skills",
             Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config") / "opencode/skills",
-            home / ".cursor/skills", Path(os.environ.get("CODEX_HOME") or home / ".codex") / "skills"]
+            home / ".cursor/skills", Path(os.environ.get("CODEX_HOME") or home / ".codex") / "skills",
+            Path(os.environ.get("GROK_HOME") or home / ".grok") / "skills",
+            Path(os.environ.get("PI_CODING_AGENT_DIR") or home / ".pi/agent") / "skills"]
 
 
 def skill_name(skill_md):
@@ -766,12 +829,16 @@ def main():
         AS_AGENT, args = (args[0][5:], args[1:]) if "=" in args[0] else ((args[1:2] or [""])[0], args[2:])
         if AS_AGENT not in AGENTS:
             die(f"--as takes one of: {', '.join(AGENTS)}")
+        try:  # lets the guard know this CLI session is the orchestrator (no agent env var outside Claude Code)
+            orc_state.record_lead(AS_AGENT)
+        except OSError:
+            pass
     if not args:
         die(__doc__)
     cmd, argv = args[0], args[1:]
     handlers = {"preflight": cmd_preflight, "status": cmd_status, "role": cmd_role,
                 "panes": cmd_panes, "ensure": cmd_ensure, "phase": cmd_phase,
-                "skills": cmd_skills}
+                "skills": cmd_skills, "flow": cmd_flow}
     if cmd not in handlers:
         die(__doc__)
     handlers[cmd](argv)

@@ -5,6 +5,8 @@
 #   bash tests/test_runtime.sh
 set -u
 cd "$(dirname "$0")/.."
+# orc.py --as records the calling CLI session as an orchestrator: keep that out of real state.
+export ORC_LEADS="$(mktemp)"
 REPO=$PWD; ORC=$REPO/shared/bin/orc.py
 pass=0; fail=0
 check() { if eval "$2"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1"; fi; }
@@ -73,6 +75,55 @@ check "the first format's workspace file is never adopted" "python3 -c \"
 import os, sys; sys.path.insert(0, '$REPO/shared/bin'); import orc_state as s
 assert not hasattr(s, 'adopt_legacy_state')
 assert s.herdorc_state_path('default', 'w1', 'w1:p1').name == 'herdorc-default-w1.pane-w1_p1.json'\""
+
+# 7. `orc.py flow`: the graph opens beside the orchestrator's own pane, not the focused one.
+F=$T/flowbin; mkdir -p "$F"
+cat > "$F/herdr" <<SH
+#!/bin/sh
+echo "herdr \$*" >> "$T/flow-calls"
+case "\$1 \$2" in
+  "plugin list") [ -n "\${NO_PLUGIN:-}" ] && { echo '{"result":{"plugins":[]}}'; exit 0; }
+    echo '{"result":{"plugins":[{"plugin_id":"orc-flow","enabled":true,"plugin_root":"/p/orc-flow"}]}}' ;;
+  "plugin pane") echo '{"result":{}}' ;;
+  *) exit 1 ;;
+esac
+SH
+cat > "$F/herdr-app" <<SH
+#!/bin/sh
+echo "herdr-app \$*" >> "$T/flow-calls"
+case "\$1" in
+  ls) echo '{"spaces":[{"id":"sp1","tabs":[{"id":"tb1","terminals":[{"terminal":"t9","pane":"p9"},{"terminal":"t7","pane":"p7"}]}]}]}' ;;
+  do) echo '{}' ;;
+esac
+SH
+cat > "$F/hc" <<SH
+#!/bin/sh
+echo '{}'
+SH
+chmod +x "$F"/*
+FL() { PATH="$F:$PATH" "$@"; }
+FL env HERDR_ENV=1 HERDR_PANE_ID=w1:p3 HERDR_WORKSPACE_ID=w1 "$ORC" --as herdorc flow > "$T/flow-out"
+check "herdorc flow: orc-flow split right of its own pane, focus kept" "grep -q '\"opened\": true' '$T/flow-out' && grep -q -- 'plugin pane open --plugin orc-flow --entrypoint graph --placement split --direction right --target-pane w1:p3 --cwd /p/orc-flow --env ORC_FLOW_PLACEMENT=split --env ORC_FLOW_ORIGIN=w1:p3 --no-focus' '$T/flow-calls'"
+check "herdorc flow without the plugin says how to install it" "! FL env NO_PLUGIN=1 HERDR_ENV=1 HERDR_PANE_ID=w1:p3 HERDR_WORKSPACE_ID=w1 '$ORC' --as herdorc flow > '$T/flow-out' && grep -q 'installers/herdr.sh' '$T/flow-out'"
+: > "$T/flow-calls"
+check "hcorc flow without the agent-flow mod says how to install it" "! FL env HC_TERMINAL_ID=t7 HERDR_APP_HOME='$T/app' '$ORC' --as hcorc flow > '$T/flow-out' && grep -q 'herdr-app-extras.sh --only agent-flow' '$T/flow-out' && ! grep -q 'pane.split' '$T/flow-calls'"
+mkdir -p "$T/app/mods/agent-flow"
+FL env HC_TERMINAL_ID=t7 HERDR_APP_HOME="$T/app" "$ORC" --as hcorc flow > "$T/flow-out"
+check "hcorc flow: agent-flow split right of its own pane" "grep -q '\"opened\": true' '$T/flow-out' && grep -q -- 'herdr-app do pane.split --direction right --pane p7 --mod agent-flow' '$T/flow-calls'"
+
+# 8. hcorc's phase: herdr-app has no pane.rename, so it goes in the orc.phase label
+# that the orc-panes pane header shows, and only where orc-panes is installed.
+: > "$T/calls"
+printf '%s' '{"agent_type": "hcorc", "tool_name": "Read", "tool_input": {}}' | env HC_TERMINAL_ID=t7 HERDR_APP_HOME="$T/app2" "$ORC" phase --hook
+check "hcorc phase without orc-panes labels nothing" "! grep -q 'hc label' '$T/calls'"
+mkdir -p "$T/app2/mods/orc-panes"; rm -f "$HOME/.local/state/orc/phase-hcorc-t7.json"
+printf '%s' '{"agent_type": "hcorc", "tool_name": "Read", "tool_input": {}}' | env HC_TERMINAL_ID=t7 HERDR_APP_HOME="$T/app2" "$ORC" phase --hook
+check "hcorc phase goes in the orc.phase label with orc-panes" "grep -q 'hc label t7 orc.phase=hcorc · exploring' '$T/calls'"
+env HC_TERMINAL_ID=t7 HERDR_APP_HOME="$T/app2" "$ORC" --as hcorc phase clear >/dev/null
+check "phase clear removes the label" "grep -q 'hc label t7 orc.phase=\$' '$T/calls'"
+check "status names the pane header as the indicator" "env HC_TERMINAL_ID=t7 HERDR_APP_HOME='$T/app2' python3 -c \"
+import sys; sys.path.insert(0, '$REPO/shared/bin'); import orc
+assert orc.HcBackend().phase_surface() == 'pane header'\""
 
 echo "runtime: pass=$pass fail=$fail"
 [ "$fail" = 0 ]

@@ -8,7 +8,7 @@
 // Inspired by runkids/skillshare's Herdr mod (MIT).
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { theme, notify, home, checking, layout, run, props } from "herdr";
+import { theme, notify, home, checking, layout, run, props, window as herdrWindow } from "herdr";
 import { PANEL, TOGGLE, find, location, contextKey, current, load } from "./skills.js";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -24,7 +24,9 @@ export default class OrcSkills extends View {
     // The button reads; a panel shown without a button reads for itself.
     const leader = () => this.toggle || !find(layout(), TOGGLE);
     cx.timer.every(1500, (cx) => { if (leader() && current()?.context !== contextKey()) this.refresh(cx); });
-    cx.timer.every(20000, (cx) => { if (leader()) this.refresh(cx); });
+    // New skills where you already are: reread only while someone can see the panel.
+    const watched = () => { const p = find(layout(), PANEL); return Boolean(p && !p.hidden) && herdrWindow().active; };
+    cx.timer.every(20000, (cx) => { if (leader() && watched()) this.refresh(cx); });
     if (leader() || current()?.context !== contextKey()) this.refresh(cx);
   }
 
@@ -35,7 +37,7 @@ export default class OrcSkills extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await load();
-        if (this.toggle || !find(layout(), TOGGLE)) this.announce(r);
+        if (r.context === contextKey() && (this.toggle || !find(layout(), TOGGLE))) this.announce(r);
       } finally {
         this.loading = false;
         cx.notify();
@@ -43,16 +45,23 @@ export default class OrcSkills extends View {
     });
   }
 
-  // One toast per project each time its set of conflicts changes.
+  // One toast each time a set of conflicts changes. Conflicts with a project copy are kept
+  // per project; those between user and orchestrator copies are the same in every folder
+  // (outside a git repo each folder is its own project), so they share one key.
   announce(r) {
-    if (!r.data) return;
-    const { project, conflicts } = r.data;
-    const sig = conflicts.map((c) => `${c.skill}:${c.use.scope}`).sort().join(",");
-    if ((this.seen[project] ?? "") === sig) return;
-    if (sig) this.seen[project] = sig; else delete this.seen[project];
+    const { project, conflicts } = r.data ?? {};
+    if (!Array.isArray(conflicts)) return;
+    const local = (c) => c.use?.scope === "project" || (c.shadows ?? []).some((s) => s.scope === "project");
+    const changed = [];
+    for (const [key, list] of [[project, conflicts.filter(local)], ["~", conflicts.filter((c) => !local(c))]]) {
+      const sig = list.map((c) => `${c.skill}:${c.use?.scope}`).sort().join(",");
+      if ((this.seen[key] ?? "") === sig) continue;
+      if (sig) this.seen[key] = sig; else delete this.seen[key];
+      changed.push(...list);
+    }
     try { localStorage.setItem("seen", JSON.stringify(this.seen)); } catch {}
-    if (!sig) return;
-    const first = conflicts[0], more = conflicts.length - 1;
+    if (!changed.length) return;
+    const first = changed[0], more = conflicts.length - 1;
     notify({
       title: `Skill conflicts: ${conflicts.length}`,
       body: `${first.skill}: the ${first.use.scope} copy is used${more ? ` (+${more} more)` : ""}.`,
@@ -69,8 +78,10 @@ export default class OrcSkills extends View {
   renderToggle() {
     const t = theme(), panel = find(layout(), PANEL);
     const on = Boolean(panel && !panel.hidden);
-    const s = current(), n = s?.context === contextKey() ? (s.data?.conflicts.length ?? 0) : 0;
-    return h_flex().size_full().items_center().pl(2).pr(10).bg(t.chrome).border_b(1).border_color(t.border)
+    const s = current(), n = s?.context === contextKey() ? (s.data?.conflicts?.length ?? 0) : 0;
+    // Level with the bar's first line (21 px down), as the bar grows taller when
+    // its tabs wrap (the tabs-row column): centred in a 42 px bar, as before.
+    return h_flex().size_full().items_start().pt(8).pl(2).pr(10).bg(t.chrome).border_b(1).border_color(t.border)
       .child(h_flex().id("orc-skills-button").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
         .hover((e) => e.bg(t.hover)).on_mouse_down("left", stop)

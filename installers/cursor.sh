@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install hcorc, herdorc and the ten roles into cursor: the orchestrators as skills (/hcorc), the roles as subagents.
+# Install hcorc, herdorc and the ten roles into cursor: the orchestrators as skills (/hcorc), the roles as subagents, the commands as skills, the guard hook.
 #
 #   installers/cursor.sh                     for your user, in ~/.cursor
 #   installers/cursor.sh --scope project [--project DIR]   in DIR/.cursor (default: current dir)

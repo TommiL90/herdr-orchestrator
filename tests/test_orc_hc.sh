@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Integration test for shared/bin/orc.py (hcorc backend) against the real
-# herdr-app window. It creates a temporary space WITHOUT moving focus, treats
-# that space's root terminal as the orchestrator, and closes the space at the
-# end (its children end with it). No agent CLI is launched.
+# herdr-app window: Herdr desktop has no isolated session to test in. It creates
+# a temporary space WITHOUT moving focus, treats that space's root terminal as
+# the orchestrator, and closes the space at the end (its children end with it).
+# It only ever stops terminals it created, by the address hc gave it, and removes
+# the phase file it wrote. No agent CLI is launched.
 set -u
 cd "$(dirname "$0")/.."
+# orc.py --as records the calling CLI session as an orchestrator: keep that out of real state.
+export ORC_LEADS="$(mktemp)"
 ORC=shared/bin/orc.py
 pass=0; fail=0
 check() { if eval "$2"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1"; fi; }
@@ -13,7 +17,12 @@ out=$(herdr-app do space.new --name orc-test --focus false)
 SP=$(echo "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin)["space"])')
 ROOT=$(echo "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin)["terminal"])')
 export HC_TERMINAL_ID=$ROOT CLAUDE_CODE_AGENT=hcorc
-cleanup() { herdr-app do space.close --id "$SP" --confirmed true >/dev/null 2>&1; }
+FOREIGN=
+cleanup() {
+  [ -n "$FOREIGN" ] && { hc kill "$FOREIGN" >/dev/null 2>&1; hc rm "$FOREIGN" >/dev/null 2>&1; }
+  herdr-app do space.close --id "$SP" --confirmed true >/dev/null 2>&1
+  rm -f ~/.local/state/orc/phase-hcorc-"$ROOT".json
+}
 trap cleanup EXIT
 sleep 1
 
@@ -59,10 +68,15 @@ $ORC panes jugdes >/dev/null 2>&1; RC=$?
 check "unknown role: rejected, no terminal created" "[ $RC != 0 ] && [ $BEFORE = \$(nkids) ]"
 
 # 5. a name taken by a terminal that is not ours -> reported, not reused
-hc run --bg --no-parent --no-notify --name jd-judge-a -- sleep 120 >/dev/null
-J=$($ORC panes judges)
-check "foreign judge-a reported as taken" "echo '$J' | python3 -c 'import json,sys;d=json.load(sys.stdin);assert [t[\"name\"] for t in d[\"taken_by_others\"]]==[\"jd-judge-a\"] and [c[\"name\"] for c in d[\"created\"]]==[\"jd-judge-b\"], d'"
-hc kill jd-judge-a >/dev/null; hc rm jd-judge-a >/dev/null
+#    Skipped when the user already has a jd-judge-a: the test must not touch it.
+if hc ls --json | python3 -c "import json,sys;sys.exit(any(t.get('name','').startswith('jd-judge') for t in json.load(sys.stdin)['terminals']))"; then
+  FOREIGN=$(hc run --bg --json --no-parent --no-notify --name jd-judge-a -- sleep 120 | python3 -c 'import json,sys;print(json.load(sys.stdin)["address"])')
+  J=$($ORC panes judges)
+  check "foreign judge-a reported as taken" "echo '$J' | python3 -c 'import json,sys;d=json.load(sys.stdin);assert [t[\"name\"] for t in d[\"taken_by_others\"]]==[\"jd-judge-a\"] and [c[\"name\"] for c in d[\"created\"]]==[\"jd-judge-b\"], d'"
+  hc kill "$FOREIGN" >/dev/null; hc rm "$FOREIGN" >/dev/null; FOREIGN=
+else
+  echo "skip: a jd-judge terminal of yours exists; not testing names taken by others"
+fi
 
 # 6. phase: explicit survives a weaker inferred phase, a strong one replaces it.
 #    herdr-app without pane.rename shows nothing and leaves the layout alone.

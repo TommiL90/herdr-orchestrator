@@ -1,7 +1,7 @@
 {
   "name": "orc-cache",
-  "version": "0.2.1",
-  "description": "Prompt-cache meter for the hcorc/herdorc orchestrators: cache read share and countdown above the prompt, the ODD phase, a guard against waits that outlast the cache, and a checkpoint hint when the context grows large.",
+  "version": "0.3.0",
+  "description": "Prompt-cache meter for the hcorc/herdorc orchestrators: cache read share and countdown above the prompt, the ODD phase, a guard against waits that outlast the cache, optional keep-alive pings while a wait runs, and a checkpoint hint when the context grows large.",
   "author": {
     "name": "herdr-orchestrators"
   },
@@ -28,6 +28,16 @@
         "deny",
         "warn",
         "off"
+      ]
+    },
+    "warm": {
+      "type": "string",
+      "title": "Keep the cache warm while waiting",
+      "description": "on: while the orchestrator waits on hc/herdr, a one-word fork of its last request renews the cache 30 seconds before it lapses. Each ping costs a cache read (0.1x the prompt); it stops after the pings that still cost less than one rewrite (11 for 5m, 19 for 1h), and the wait guard then allows waits up to that span. off: no pings",
+      "default": "off",
+      "options": [
+        "off",
+        "on"
       ]
     },
     "checkpointAtTokens": {

@@ -8,7 +8,7 @@
     {
       "name": "orc-cache",
       "source": "./mods/orc-cache",
-      "description": "Claude Code only: prompt-cache meter and wait guard for hcorc/herdorc sessions."
+      "description": "Claude Code only: prompt-cache meter, wait guard and opt-in keep-alive for hcorc/herdorc sessions."
     },
     {
       "name": "orc-graph",

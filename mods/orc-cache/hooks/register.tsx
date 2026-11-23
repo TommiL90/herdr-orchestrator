@@ -4,7 +4,8 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Policy, Sample, Ttl } from '../types'
 import {
   agentOf, decideTtl, fmtClock, fmtTokens, hitRatio, missReason, observeTtl, parseWait,
-  phaseFile, promptTokens, remainingMs, suggestedTimeout, ttlMs, WAIT_MARGIN_MS,
+  phaseFile, promptTokens, remainingMs, renewed, shouldWarm, suggestedTimeout, ttlMs,
+  WAIT_MARGIN_MS, warmBudget, warmSpanMs,
 } from './cache'
 
 const last = atom({ plugin: 'orc-cache', key: 'last' } as const, null as Sample | null)
@@ -16,10 +17,13 @@ const phase = atom({ plugin: 'orc-cache', key: 'phase' } as const, null as strin
 const agentAtom = atom({ plugin: 'orc-cache', key: 'agent' } as const, null as string | null)
 const now = atom({ plugin: 'orc-cache', key: 'now' } as const, 0)
 
-type Options = { ttl?: string; waitGuard?: string; checkpointAtTokens?: number; everywhere?: boolean }
+type Options = { ttl?: string; waitGuard?: string; warm?: string; checkpointAtTokens?: number; everywhere?: boolean }
 /** Toasts and hints only for prompts at least this large: below it a rewrite costs little. */
 const TOAST_MIN_TOKENS = 20_000
 const WARN_LEFT_MS = 60_000
+/** The keep-alive fork's one message: nothing ahead of it changes, so the cache is read on every model. */
+const KEEPALIVE_PROMPT = 'Cache keep-alive from the orc-cache mod, not a task. You have no tools here. '
+  + 'Answer straight away, without thinking it over, with the one word: ok'
 
 /** What register's options settle to, shared with the helpers below. */
 const cfg: {
@@ -28,7 +32,51 @@ const cfg: {
   phasePath?: string
   timer?: { cancel: () => void }
   ticks: number
-} = { opt: {}, checkpointAt: 150_000, ticks: 0 }
+  /** Keep-alive: when the pending foreground and background waits end ($.clock ms; 0: none). */
+  fgUntil: number
+  bgUntil: number
+  /** Pings since the last real request, a ping out, main-loop requests out. */
+  pings: number
+  warming: boolean
+  inFlight: number
+} = { opt: {}, checkpointAt: 150_000, ticks: 0, fgUntil: 0, bgUntil: 0, pings: 0, warming: false, inFlight: 0 }
+
+function warmOn(): boolean {
+  return cfg.opt.warm === 'on'
+}
+
+/**
+ * Keep-alive: during a pending hc/herdr wait, shortly before the entry lapses, a fork
+ * of the main thread's last request reads the cached prefix and so renews it. Off
+ * unless the `warm` option is on; capped at warmBudget pings per wait.
+ */
+async function maybeWarm($: EngineInterface): Promise<void> {
+  if (!warmOn() || (await read($, agentAtom)) === null) return
+  const s = await read($, last)
+  const p = await read($, policy)
+  if (!s || !p) return
+  const t = await $.clock.now()
+  const w = { until: Math.max(cfg.fgUntil, cfg.bgUntil), pings: cfg.pings, busy: cfg.warming || cfg.inFlight > 0 }
+  if (!shouldWarm(s, p.ttl, t, w, TOAST_MIN_TOKENS)) return
+  cfg.warming = true
+  try {
+    const r = await $.model.fork({ prompt: KEEPALIVE_PROMPT })
+    if (r.isAnswered && renewed(s, r.usage.cache_read_input_tokens)) {
+      cfg.pings += 1
+      // Renewed from the ping's start; a real request recorded meanwhile wins.
+      await update($, last, cur => (cur && cur.startedAt === s.startedAt ? { ...cur, startedAt: t } : cur))
+      return
+    }
+    cfg.fgUntil = 0 // the entry is gone or unreachable: no more pings for this wait
+    cfg.bgUntil = 0
+    if (!r.isAnswered && r.reason === 'nothing-to-fork') return
+    $.ui.toast(r.isAnswered
+      ? `Cache keep-alive read ${fmtTokens(r.usage.cache_read_input_tokens)} of ${fmtTokens(promptTokens(s))} tokens: the entry had lapsed; stopped for this wait`
+      : `Cache keep-alive failed (${r.reason}); stopped for this wait`)
+  } finally {
+    cfg.warming = false
+  }
+}
 
 async function isShown($: EngineInterface): Promise<boolean> {
 return (await read($, agentAtom)) !== null || cfg.opt.everywhere === true
@@ -62,6 +110,7 @@ async function readPhase($: EngineInterface): Promise<void> {
 }
 
 async function record($: EngineInterface, cur: Sample): Promise<void> {
+  cfg.pings = 0 // a real request: the next wait gets the whole keep-alive budget
   const before = await read($, last)
   const known = await read($, observed)
   const seen = observeTtl(before, cur, known)
@@ -101,6 +150,7 @@ async function activate($: EngineInterface, agent: string | null): Promise<void>
       cfg.ticks += 1
       void $.clock.now().then(t => update($, now, () => t))
       if (cfg.ticks % 3 === 0) void readPhase($)
+      if (warmOn()) void maybeWarm($).catch(() => { cfg.warming = false })
     })
   }
 }
@@ -164,7 +214,13 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined || !(await isShown($))) return yield* next(e)
     await resume($)
     const startedAt = await $.clock.now()
-    const result = yield* next(e)
+    cfg.inFlight += 1
+    let result
+    try {
+      result = yield* next(e)
+    } finally {
+      cfg.inFlight -= 1
+    }
     const u = result.usage
     if (u) {
       await record($, {
@@ -178,29 +234,44 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // The orchestrator's waits: one that outlasts the cache makes the next wake-up rewrite it.
+  // The orchestrator's waits: one that outlasts the cache makes the next wake-up rewrite
+  // it, unless keep-alive pings renew the entry while it runs.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    if (opt.waitGuard === 'off' || e.agentId !== undefined || (await read($, agentAtom)) === null) return next(e)
+    if (e.agentId !== undefined || (await read($, agentAtom)) === null) return next(e)
     const wait = parseWait(e.command, e.run_in_background === true, e.timeout)
     if (!wait) return next(e)
     const p = (await read($, policy)) ?? (await refreshPolicy($))
     const s = await read($, last)
-    const size = s ? `${fmtTokens(promptTokens(s))} tokens` : 'the whole conversation'
-    if (wait.ms > ttlMs(p.ttl) - WAIT_MARGIN_MS) {
-      const why = `this ${wait.tool} wait can block for ${fmtClock(wait.ms)}, longer than the ${p.ttl} prompt cache (${p.source}), so the next request would write ${size} to the cache again.`
+    const warm = warmOn()
+    const span = warm ? warmSpanMs(p.ttl) : ttlMs(p.ttl)
+    if (opt.waitGuard !== 'off' && wait.ms > span - WAIT_MARGIN_MS) {
+      const size = s ? `${fmtTokens(promptTokens(s))} tokens` : 'the whole conversation'
+      const what = warm
+        ? `longer than keep-alive covers (${warmBudget(p.ttl)} pings on the ${p.ttl} prompt cache, ${p.source})`
+        : `longer than the ${p.ttl} prompt cache (${p.source})`
+      const why = `this ${wait.tool} wait can block for ${fmtClock(wait.ms)}, ${what}, so the next request would write ${size} to the cache again.`
       if (opt.waitGuard !== 'warn') {
-        return { deny: `${$.plugin.name}: ${why} Run it again with ${suggestedTimeout(wait.tool, p.ttl)} or less; a timeout is a check-in, so wait again after it.` }
+        return { deny: `${$.plugin.name}: ${why} Run it again with ${suggestedTimeout(wait.tool, p.ttl, span)} or less; a timeout is a check-in, so wait again after it.` }
       }
       $.ui.toast(`Wait of ${fmtClock(wait.ms)} outlasts the ${p.ttl} cache`)
-      return next(e)
-    }
-    if (s) {
+    } else if (s && !warm && opt.waitGuard !== 'off') {
       const left = remainingMs(s, p.ttl, await $.clock.now())
       if (left > 0 && wait.ms > left - 5_000 && promptTokens(s) >= TOAST_MIN_TOKENS) {
         $.ui.toast(`This wait may outlast the cache (${fmtClock(left)} left)`)
       }
     }
-    return next(e)
+    if (!warm || !Number.isFinite(wait.ms)) return next(e)
+    const t = await $.clock.now()
+    if (e.run_in_background === true) { // pending until its own --timeout at the latest
+      cfg.bgUntil = Math.max(cfg.bgUntil, t + wait.ms)
+      return next(e)
+    }
+    cfg.fgUntil = t + wait.ms
+    try {
+      return await next(e)
+    } finally {
+      cfg.fgUntil = 0
+    }
   }).catch(($, e, next) =>
     // A meter, not a safety guard: if it fails, the command runs as asked.
     next(e),
@@ -233,6 +304,9 @@ export const register: Register = (on, options) => {
         })
       }
       if (why) parts.push({ text: `miss: ${why}`, color: 'warning' })
+      if (warmOn() && t < Math.max(cfg.fgUntil, cfg.bgUntil)) {
+        parts.push({ text: `keep-alive ${cfg.pings}/${warmBudget(p.ttl)}` })
+      }
       const isLarge = agent !== null && size >= checkpointAt
       parts.push({
         text: isLarge ? `ctx ${fmtTokens(size)}: checkpoint + clear at the next clean point` : `ctx ${fmtTokens(size)}`,

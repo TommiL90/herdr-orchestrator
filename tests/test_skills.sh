@@ -4,6 +4,8 @@
 #   bash tests/test_skills.sh
 set -u
 cd "$(dirname "$0")/.."
+# orc.py --as records the calling CLI session as an orchestrator: keep that out of real state.
+export ORC_LEADS="$(mktemp)"
 ORC=$PWD/shared/bin/orc.py
 pass=0; fail=0
 check() { if eval "$2"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1"; fi; }
