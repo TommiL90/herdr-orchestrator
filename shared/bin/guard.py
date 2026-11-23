@@ -561,6 +561,15 @@ def command_of(data, fmt):
     return (data.get("tool_input") or {}).get("command") or ""
 
 
+def truncated(data, fmt):
+    """Grok sends a call's input past 128 KiB as a string ending in " [truncated]", and says
+    so in toolInputTruncated: the command can't be read."""
+    if fmt != "grok":
+        return False
+    tool_input = data.get("toolInput", data.get("tool_input"))
+    return data.get("toolInputTruncated") is True or isinstance(tool_input, str)
+
+
 def orchestrator(data, fmt="claude"):
     """hcorc/herdorc when the session's main agent or the calling agent is one, else ''.
     Outside Claude Code no variable names the agent: `orc.py --as <agent>` records the
@@ -571,7 +580,8 @@ def orchestrator(data, fmt="claude"):
             return name
     if fmt == "claude":
         return ""
-    name = orc_state.lead_of_session()
+    # pi's extension sends its conversation (pi keeps one process across /new and /resume).
+    name = orc_state.lead_of_session(str(data.get("session_id") or ""))
     return name if name in AGENTS else ""
 
 
@@ -614,6 +624,11 @@ def main():
     except Exception:
         sys.exit(0)
     if not isinstance(data, dict):
+        sys.exit(0)
+    if truncated(data, fmt):  # unreadable: an orchestrator's call is refused, anyone else's runs
+        if orchestrator(data, fmt):
+            answer(fmt, "deny", "Grok cut this shell call's input past 128 KiB, so the guard cannot read "
+                   "the command. Run it again shorter: put long text in a file and pass the file's path.")
         sys.exit(0)
     command = command_of(data, fmt)
     if not command or not MENTION_RE.search(command):

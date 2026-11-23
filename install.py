@@ -459,12 +459,15 @@ def command_prompt(cli, name, cmd):
                         ("argument-hint", hint.group(1).strip() if hint else None)]) + intro + run_inline(body)
 
 
-def load_prompt_body(name, prompt_file, pane):
-    """The body of a command that turns this session into an orchestrator by reading its prompt."""
+def load_prompt_body(name, prompt_file, pane, args=None):
+    """The body of a command that turns this session into an orchestrator by reading its prompt.
+    `args` is the CLI's placeholder for what the user typed after the command, where the CLI
+    puts only the expanded body in the conversation (pi's $ARGUMENTS)."""
     return (f"\n# {name}\n\nRead `{prompt_file}` completely now and follow it as your operating "
             f"instructions for the rest of this session: from here on you are {name}, running inside "
             f"{pane}. Read it again after any context compaction. Then handle the user's request, if "
-            f"one came with this command.\n")
+            f"one came with this command.\n"
+            + (f"\nThe user's request (empty when none): {args}\n" if args else ""))
 
 
 def command_skill(cli, name, cmd):
@@ -501,28 +504,42 @@ def opencode_plugin():
     return f"""// {MARK} from {ROOT}. Edit the sources there and re-run it.
 // The orchestrator guard for OpenCode: runs shared/bin/guard.py before each shell
 // call that names hc, herdr-app or herdr, and refuses the call when the guard does.
+// OpenCode 2.x calls setup(); 1.x (1.18.29 and later) calls server().
 import {{ spawnSync }} from "node:child_process"
 
 const GUARD = {guard}
 const MENTION = /\\b(hc|herdr-app|herdr)\\b/
-const agents = new Map() // sessionID -> the agent the user talks to in that session
 
-export const HerdrOrchestratorsGuard = async () => ({{
-  "chat.message": async (input) => {{
-    if (input?.agent) agents.set(input.sessionID, input.agent)
+// Throws, which refuses the call, when the guard refuses `agent` this command.
+function check(tool, command, agent) {{
+  if (tool !== "bash" && tool !== "shell") return
+  if (typeof command !== "string" || !MENTION.test(command)) return
+  const r = spawnSync(GUARD, ["--format", "opencode"], {{
+    input: JSON.stringify({{ command, agent_type: agent ?? "" }}),
+    encoding: "utf8",
+    timeout: 30000,
+  }})
+  if (r.status === 2) throw new Error((r.stderr || "orchestrator guard: refused").trim())
+}}
+
+const agents = new Map() // 1.x: sessionID -> the agent the user talks to in that session
+
+export default {{
+  id: "herdr-orchestrators-guard",
+  // 2.x: the tool hook's event names its agent ({{ tool, sessionID, agent, input }}).
+  async setup(ctx) {{
+    await ctx.tool.hook("execute.before", (event) => check(event?.tool, event?.input?.command, event?.agent))
   }},
-  "tool.execute.before": async (input, output) => {{
-    if (input?.tool !== "bash" && input?.tool !== "shell") return
-    const command = output?.args?.command
-    if (typeof command !== "string" || !MENTION.test(command)) return
-    const r = spawnSync(GUARD, ["--format", "opencode"], {{
-      input: JSON.stringify({{ command, agent_type: agents.get(input.sessionID) ?? "" }}),
-      encoding: "utf8",
-      timeout: 30000,
-    }})
-    if (r.status === 2) throw new Error((r.stderr || "orchestrator guard: refused").trim())
+  async server() {{
+    return {{
+      "chat.message": async (input) => {{
+        if (input?.agent) agents.set(input.sessionID, input.agent)
+      }},
+      "tool.execute.before": async (input, output) =>
+        check(input?.tool, output?.args?.command, agents.get(input?.sessionID)),
+    }}
   }},
-}})
+}}
 """
 
 
@@ -549,8 +566,10 @@ export default function (pi) {{
     if (event?.toolName !== "bash") return;
     const command = event?.input?.command;
     if (typeof command !== "string" || !MENTION.test(command)) return;
+    // The conversation: pi runs /new and /resume in the same process.
+    const session_id = ctx?.sessionManager?.getSessionId?.() ?? "";
     const r = spawnSync(GUARD, ["--format", "pi"], {{
-      input: JSON.stringify({{ command }}),
+      input: JSON.stringify({{ command, session_id }}),
       encoding: "utf8",
       timeout: 30000,
     }});
@@ -670,10 +689,12 @@ def plan(cli, scope, project, agents):
         for name in agents:
             prompt_file = base / PI_PROMPTS / f"{name}.md"
             files[prompt_file] = f"<!-- {MARK} from {ROOT}. -->\n" + orchestrator_prompt(cli, name)
+            # pi puts only the expanded template in the conversation: $ARGUMENTS keeps the request.
             files[base / f"prompts/{name}.md"] = frontmatter(
                 [("description", f"Make this session the {name} orchestrator; start pi inside "
-                                 f"{ORCHESTRATORS[name]['pane']} first")]
-            ) + load_prompt_body(name, prompt_file, ORCHESTRATORS[name]["pane"])
+                                 f"{ORCHESTRATORS[name]['pane']} first"),
+                 ("argument-hint", "[request]")]
+            ) + load_prompt_body(name, prompt_file, ORCHESTRATORS[name]["pane"], args="$ARGUMENTS")
             for cmd in COMMANDS:
                 files[base / f"prompts/{name}-{cmd}.md"] = command_prompt(cli, name, cmd)
         files[base / PI_GUARD] = pi_guard()
@@ -1177,8 +1198,21 @@ def herdr_patch(tree):
     return True
 
 
-def herdr_unpatch(tree):
-    wrap = herdr_find(tree, "tabs-row")
+def herdr_tabs_row_ours(tree, entry):
+    """Whether the layout's tabs-row is the column herdr_patch put around the bar. An
+    install from before this was recorded made it when it holds only the bar."""
+    row = herdr_find(tree, "tabs-row")
+    if not row:
+        return False
+    if "tabs_row" in entry:
+        return entry["tabs_row"]
+    return [c.get("id") for c in row[0].get("children", [])] == ["orc-skills-bar"]
+
+
+def herdr_unpatch(tree, own_row=True):
+    """Take the Skills bar and panel out. own_row: the tabs-row column is ours to remove
+    (one the person made stays, with the tab bar back inside it)."""
+    wrap = herdr_find(tree, "tabs-row") if own_row else None
     if wrap and wrap[1] is not None:  # only the column we put around the bar
         node, parent = wrap
         kids = node.get("children", [])
@@ -1229,11 +1263,8 @@ def panes_base(tree, hp):
     """The header orc-panes draws through: the one the layout's tab blocks show (or the
     one orc-panes took the place of), else Herdr's own `pane`; None when neither is there."""
     for look in herdr_tab_looks(tree):
-        content = ((look.get("pane") or {}).get("header") or {}).get("content") or {}
-        mod = content.get("mod")
-        if mod == HERDR_PANES:
-            mod = ((content.get("props") or {}).get("replaces") or {}).get("mod")
-        if mod and (hp / "mods" / mod / "main.js").is_file():
+        mod = panes_header_mod(look)
+        if (hp / "mods" / mod / "main.js").is_file():
             return mod
         break
     return "pane" if (hp / "mods/pane/main.js").is_file() else None
@@ -1255,11 +1286,28 @@ def panes_files(hp, base):
     return files
 
 
-def panes_take(tree):
-    """Every tab block's pane header becomes orc-panes, which keeps the header it
-    replaced (None: there was none) for panes_release. False: no block shows a tab."""
+def panes_header_mod(look):
+    """The header mod a tab look draws (the one orc-panes replaced, for its own), or
+    "pane" when it has none: what orc-panes adds then is Herdr's."""
+    content = ((look.get("pane") or {}).get("header") or {}).get("content") or {}
+    if content.get("mod") == HERDR_PANES:
+        content = (content.get("props") or {}).get("replaces") or {}
+    return content.get("mod") or "pane"
+
+
+def panes_take(tree, base):
+    """The pane header of every tab block that draws `base` (orc-panes' build draws
+    through that one header) becomes orc-panes, which keeps the header it replaced
+    (None: there was none) for panes_release. Returns how many blocks keep their own
+    header; None when no block shows a tab."""
     looks = herdr_tab_looks(tree)
+    if not looks:
+        return None
+    kept = 0
     for look in looks:
+        if panes_header_mod(look) != base:
+            kept += 1  # another header: orc-panes would lose what it draws
+            continue
         added = "pane" not in look
         pane = look.setdefault("pane", {})
         header = pane.get("header")
@@ -1268,7 +1316,7 @@ def panes_take(tree):
             pane["header"] = dict(PANES_HEADER, content={"mod": HERDR_PANES, "props": props})
         elif (header.get("content") or {}).get("mod") != HERDR_PANES:
             header["content"] = {"mod": HERDR_PANES, "props": {"replaces": header.get("content")}}
-    return bool(looks)
+    return kept
 
 
 def panes_release(tree):
@@ -1297,6 +1345,9 @@ def herdr_refusal(hp, name, force):
     mine = ours(dst) if dst.is_symlink() else (dst / HERDR_MARKER).exists()
     if present(dst) and not mine and not force:
         return f"{dst} exists and was not written by install.py (pass --force)"
+    aside = hp / f"{name}.before-orc"
+    if present(dst) and not mine and (present(aside) or aside.is_symlink()):
+        return f"{aside} already holds an earlier {name}; move one of them away first"
     return None
 
 
@@ -1320,8 +1371,7 @@ def herdr_place(hp, name, files):
             if (dst / HERDR_MARKER).exists():  # a copy from before installs were links
                 shutil.rmtree(dst)
             else:  # --force: keep theirs outside mods/, where Herdr would load it
-                aside = hp / f"{name}.before-orc"
-                shutil.rmtree(aside, ignore_errors=True)
+                aside = hp / f"{name}.before-orc"  # free: herdr_refusal said so
                 dst.rename(aside)
                 print(f"[herdr-app] moved the existing {dst} to {aside}")
         link(dst, built)
@@ -1417,9 +1467,17 @@ def panes_take_back(hp, manifest):
         print(f"[herdr-app] pane names left out: layout {entry['layout']} has a pane header orc-panes can't draw through")
         return
     herdr_place(hp, HERDR_PANES, files)
-    if panes_take(tree):
+    before = json.dumps(tree)
+    panes_kept_note(panes_take(tree, base), base)
+    if json.dumps(tree) != before:
         herdr_write(path, json.dumps(tree, indent=2) + "\n")
     entry["panes"] = {"base": base}
+
+
+def panes_kept_note(kept, base):
+    if kept:
+        print(f"[herdr-app] pane names: {kept} tab block(s) keep their own pane header "
+              f"(orc-panes draws through {base}, which they don't show)")
 
 
 def herdr_mod_files():
@@ -1432,7 +1490,7 @@ def herdr_mod_files():
                           f"export const ORC = {json.dumps(str(ROOT / 'shared/bin/orc.py'))};\n"
                           f"export const PYTHON = {json.dumps(stable_python())};\n",
              HERDR_MARKER: "Written by herdr-orchestrators install.py --herdr-app.\n"}
-    for name in ("skills.js", "icon.svg", "mod.json", "main.js"):
+    for name in ("skills.js", "seen.js", "icon.svg", "mod.json", "main.js"):
         files[name] = (src / name).read_text()
     return files
 
@@ -1493,9 +1551,12 @@ def install_herdr_app(dry, force, manifest):
             note = f"; Herdr is not running: pick layout {target} with ctrl-shift-l"
     tree = herdr_json(layout_path, None)
     before = json.dumps(tree)
+    had_row = tree is not None and herdr_tabs_row_ours(tree, entry if entry.get("layout") == target else {})
+    found_row = tree is not None and bool(herdr_find(tree, "tabs-row"))
     if tree is None or not herdr_patch(tree):
         print(f"[herdr-app] mod written, but layout {target} could not be patched")
         return False
+    manifest[key]["tabs_row"] = had_row or (not found_row and bool(herdr_find(tree, "tabs-row")))
     # Pane names: the mod first, then the header that shows it.
     base = panes_base(tree, hp)
     pane_files = base and panes_files(hp, base)
@@ -1503,7 +1564,7 @@ def install_herdr_app(dry, force, manifest):
         herdr_place(hp, HERDR_PANES, pane_files)
         manifest[key]["files"].append(str(pdst))
         manifest[key]["panes"] = {"base": base}
-        panes_take(tree)
+        panes_kept_note(panes_take(tree, base), base)
     if json.dumps(tree) != before:  # a rerun leaves the layout file alone
         herdr_write(layout_path, json.dumps(tree, indent=2) + "\n")
     check = herdr_app("check", str(dst))
@@ -1548,7 +1609,7 @@ def uninstall_herdr_app(dry, manifest):
         else:
             tree = herdr_json(layout_path, None)
             if tree is not None:
-                herdr_unpatch(tree)
+                herdr_unpatch(tree, herdr_tabs_row_ours(tree, entry))
                 panes_release(tree)
                 herdr_write(layout_path, json.dumps(tree, indent=2) + "\n")
     herdr_drop_keys(hp, entry, PANES_KEYS, "herdr-app")

@@ -10,7 +10,8 @@ pass=0; fail=0
 check() { if eval "$2"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1"; fi; }
 
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-export HOME=$T/home ORC_DIST=$T/dist; unset XDG_CONFIG_HOME CODEX_HOME
+# Every location install.py reads from the environment, so nothing outside $T is touched.
+export HOME=$T/home ORC_DIST=$T/dist; unset XDG_CONFIG_HOME CODEX_HOME GROK_HOME PI_CODING_AGENT_DIR HERDR_APP_HOME ORC_LEADS
 mkdir -p "$HOME/.claude" "$HOME/.cursor/agents" "$HOME/.codex" "$HOME/.gemini/config" "$HOME/.agents/skills" "$T/proj"
 # agy's skills folder linked to the shared one (as on many machines): one set of command skills.
 ln -s "$HOME/.agents/skills" "$HOME/.gemini/config/skills"
@@ -49,8 +50,24 @@ check "codex hooks: guard --format codex on ^Bash\$, user hook kept" "python3 -c
 check "cursor hooks: guard on beforeShellExecution, version kept, user hook kept" "python3 -c \"import json;d=json.load(open('$HOME/.cursor/hooks.json'));assert d['version']==1;assert d['hooks']['preToolUse'][0]['command']=='mine-cursor.sh';assert d['hooks']['beforeShellExecution'][0]['command'].endswith('guard.py --format cursor')\""
 check "agy hooks: a named hook on run_command, user hook kept" "python3 -c \"import json;d=json.load(open('$HOME/.gemini/config/hooks.json'));assert 'mine' in d;h=d['herdr-orchestrators']['PreToolUse'][0];assert h['matcher']=='run_command' and h['hooks'][0]['command'].endswith('guard.py --format agy')\""
 check "opencode guard plugin calls guard --format opencode" "[ -L $HOME/.config/opencode/plugins/herdr-orchestrators-guard.js ] && grep -q 'tool.execute.before' $HOME/.config/opencode/plugins/herdr-orchestrators-guard.js && grep -q '\"--format\", \"opencode\"' $HOME/.config/opencode/plugins/herdr-orchestrators-guard.js"
+# OpenCode 2.x runs only a plugin's setup(); 1.x its server(). Both must refuse what the guard refuses.
+cat > "$T/opencode-plugin.mjs" <<'EOF'
+const plugin = (await import(process.argv[2])).default
+const refused = async (call) => { try { await call(); return false } catch { return true } }
+let hook
+await plugin.setup({ tool: { hook: async (name, fn) => { if (name === "execute.before") hook = fn } } })
+const v2 = (agent, command) => () => hook({ tool: "bash", sessionID: "s", agent, input: { command } })
+const v1 = await plugin.server()
+await v1["chat.message"]({ sessionID: "s1", agent: "herdorc" })
+const ok = plugin.id && hook
+  && await refused(v2("herdorc", "herdr server stop")) && !(await refused(v2("build", "herdr server stop")))
+  && !(await refused(v2("herdorc", "ls")))
+  && await refused(() => v1["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, { args: { command: "herdr server stop" } }))
+process.exit(ok ? 0 : 1)
+EOF
+check "opencode guard plugin refuses through setup() (2.x) and server() (1.x)" "node '$T/opencode-plugin.mjs' '$HOME/.config/opencode/plugins/herdr-orchestrators-guard.js'"
 check "grok hooks: a hooks file of ours, guard --format grok on Bash" "python3 -c \"import json;h=json.load(open('$HOME/.grok/hooks/herdr-orchestrators.json'))['hooks']['PreToolUse'];assert len(h)==1 and h[0]['matcher']=='Bash' and h[0]['hooks'][0]['command'].endswith('guard.py --format grok')\""
-check "pi guard extension: tool_call on bash, guard --format pi, asks in pi's dialog" "grep -q 'pi.on(\"tool_call\"' $HOME/.pi/agent/extensions/herdr-orchestrators-guard.ts && grep -q '\"--format\", \"pi\"' $HOME/.pi/agent/extensions/herdr-orchestrators-guard.ts && grep -q 'ctx.ui.confirm' $HOME/.pi/agent/extensions/herdr-orchestrators-guard.ts"
+check "pi guard extension: tool_call on bash, guard --format pi with the conversation, asks in pi's dialog" "grep -q 'pi.on(\"tool_call\"' $HOME/.pi/agent/extensions/herdr-orchestrators-guard.ts && grep -q '\"--format\", \"pi\"' $HOME/.pi/agent/extensions/herdr-orchestrators-guard.ts && grep -q 'ctx.ui.confirm' $HOME/.pi/agent/extensions/herdr-orchestrators-guard.ts && grep -q 'sessionManager?.getSessionId' $HOME/.pi/agent/extensions/herdr-orchestrators-guard.ts"
 check "a rerun adds no second guard" "I >/dev/null && [ \$(grep -c guard.py $HOME/.codex/hooks.json) = 1 ] && [ \$(grep -c guard.py $HOME/.cursor/hooks.json) = 1 ] && [ \$(grep -c guard.py $HOME/.gemini/config/hooks.json) = 1 ]"
 # Command parity: agy, codex and cursor get the commands as user-only skills, in one shared folder.
 SK=$HOME/.agents/skills/hcorc-panes
@@ -58,6 +75,7 @@ check "command skills: user-only, preflight as a step, arguments named" "[ -L $S
 check "command skills shared by agy, codex, cursor and grok" "[ \$(python3 -c \"import json;m=json.load(open('$HOME/.local/state/orc/installs.json'));print(sum('$SK/SKILL.md' in e['files'] for k,e in m.items() if k.split('|')[0] in ('agy','codex','cursor','grok')))\") = 4 ]"
 PT=$HOME/.pi/agent/prompts
 check "pi commands: prompt templates that keep \$ARGUMENTS and run the preflight as a step" "grep -q 'panes [$]ARGUMENTS' $PT/hcorc-panes.md && grep -q 'preflight hcorc. with your shell tool' $PT/hcorc-panes.md && ! grep -q '!.' $PT/hcorc-panes.md && grep -q '^argument-hint:' $PT/hcorc-panes.md"
+check "pi /<name> loads the orchestrator prompt and keeps the request typed after it" "grep -q 'request (empty when none): [$]ARGUMENTS' $PT/hcorc.md && grep -q '^argument-hint:' $PT/hcorc.md && ! grep -q 'ARGUMENTS' $HOME/.cursor/skills/hcorc/SKILL.md"
 check "pi /<name> loads the orchestrator prompt; the prompt has pi's vocabulary" "grep -q '$HOME/.pi/agent/herdr-orchestrators/hcorc.md' $PT/hcorc.md && grep -q '# Tool vocabulary (pi)' $HOME/.pi/agent/herdr-orchestrators/hcorc.md && grep -q 'leave .Internal subagent. out' $HOME/.pi/agent/herdr-orchestrators/hcorc.md && grep -q 'prompt templates; the user types ./<name>.' $HOME/.pi/agent/herdr-orchestrators/hcorc.md"
 check "grok prompt: its tools, its launch, commands as /skills" "grep -q '# Tool vocabulary (Grok Build)' $HOME/.grok/agents/hcorc.md && grep -q 'ask_user_question' $HOME/.grok/agents/hcorc.md && grep -q 'spawn_subagent' $HOME/.grok/agents/hcorc.md && grep -q 'grok --agent hcorc' $HOME/.grok/agents/hcorc.md && grep -q '/hcorc-status' $HOME/.grok/agents/hcorc.md"
 check "codex prompt names its commands with \$" "grep -q 'hcorc-cleanup' $HOME/.codex/hcorc.config.toml && grep -q '[$]hcorc-cleanup' $HOME/.codex/hcorc.config.toml && grep -q 'the user types .[$]<name>.' $HOME/.codex/hcorc.config.toml"
@@ -170,7 +188,11 @@ old = copy.deepcopy(orig); old['children'][0] = {'id': 'orc-skills-bar', 'type':
 assert I.herdr_patch(old) and I.herdr_find(old, 'tabs-row')[0]['children'][0]['id'] == 'orc-skills-bar'
 I.herdr_unpatch(t); t['children'][1]['children'] = []; assert t == orig, t
 mine = {'id': 'w', 'type': 'column', 'children': [{'id': 'tabs-row', 'type': 'row', 'children': [tabs]}, {'id': 'work-body', 'type': 'row', 'children': []}]}
-assert I.herdr_patch(mine) and I.herdr_find(mine, 'tabs-row')[0]['type'] == 'row'\""
+assert I.herdr_patch(mine) and I.herdr_find(mine, 'tabs-row')[0]['type'] == 'row'
+col = {'id': 'w', 'type': 'column', 'children': [{'id': 'tabs-row', 'type': 'column', 'size': {'px': 50}, 'children': [dict(tabs, size={'weight': 1})]}, {'id': 'work-body', 'type': 'row', 'children': []}]}
+before = copy.deepcopy(col); assert I.herdr_patch(col)
+assert I.herdr_tabs_row_ours(col, {}) and not I.herdr_tabs_row_ours(col, {'tabs_row': False}) and I.herdr_tabs_row_ours(old, {'tabs_row': True})
+I.herdr_unpatch(col, own_row=False); col['children'][1]['children'] = []; assert col == before, col\""
 
 # 9. the Herdr desktop Skills panel, in a throwaway Herdr home. A stub
 # herdr-app stands in for the real one, so no window is ever asked.
@@ -214,8 +236,20 @@ check "herdr-app: a copy from before links becomes a link" "HP >/dev/null && [ -
 cp "$H/layouts/main.json" "$H/layouts/mine.json"; echo '{"layout": "mine"}' > "$H/shared.json"
 check "herdr-app: a personal layout is patched in place" "HP >/dev/null && grep -q orc-skills-panel '$H/layouts/mine.json' && [ ! -e '$L' ]"
 check "herdr-app: uninstall restores the personal layout" "HP --uninstall >/dev/null && python3 -c \"import json;a=json.load(open('$H/layouts/mine.json'));b=json.load(open('$H/layouts/main.json'));assert a==b,(a,b)\""
+python3 - "$H/layouts/main.json" "$H/layouts/rowed.json" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1])); work = t["children"][0]
+work["children"][0] = {"id": "tabs-row", "type": "column", "size": {"px": 42}, "children": [dict(work["children"][0], size={"weight": 1})]}
+json.dump(t, open(sys.argv[2], "w"))
+PY
+cp "$H/layouts/rowed.json" "$T/rowed.orig.json"; echo '{"layout": "rowed"}' > "$H/shared.json"
+check "herdr-app: a tabs-row the person made stays after uninstall" "HP >/dev/null && python3 -c \"import json;assert json.load(open('$HOME/.local/state/orc/installs.json'))['herdr-app|$H']['tabs_row'] is False\" && HP --uninstall >/dev/null && python3 -c \"import json;a=json.load(open('$H/layouts/rowed.json'));b=json.load(open('$T/rowed.orig.json'));assert a==b,(a,b)\""
+echo '{"layout": "mine"}' > "$H/shared.json"
 mkdir -p "$H/mods/orc-panes" && echo mine > "$H/mods/orc-panes/main.js"
 check "herdr-app: someone else's orc-panes mod is refused" "! HP >/dev/null && [ \"\$(cat '$H/mods/orc-panes/main.js')\" = mine ] && [ ! -L '$H/mods/orc-skills' ]"
+mkdir -p "$H/orc-panes.before-orc" && echo older > "$H/orc-panes.before-orc/main.js"
+check "herdr-app: --force never deletes an earlier .before-orc" "! HP --force >/dev/null && [ \"\$(cat '$H/orc-panes.before-orc/main.js')\" = older ] && [ \"\$(cat '$H/mods/orc-panes/main.js')\" = mine ]"
+rm -rf "$H/orc-panes.before-orc"
 rm -rf "$H/mods/orc-panes"
 mkdir -p "$H/mods/orc-skills" && echo mine > "$H/mods/orc-skills/main.js"
 check "herdr-app: someone else's orc-skills mod is refused" "! HP >/dev/null && [ \"\$(cat '$H/mods/orc-skills/main.js')\" = mine ]"
@@ -234,22 +268,28 @@ orig = copy.deepcopy(t)
 assert I.panes_base(t, hp) == 'herdr-nvim-header'
 f = I.panes_files(hp, 'herdr-nvim-header'); assert {'base/main.js', 'base/pane-base.js', 'main.js', 'names.js', 'mod.json'} <= set(f), sorted(f)
 assert list(f)[-1] == 'main.js'
-assert I.panes_take(t); h = t['children'][0]['content']['pane']['header']
+assert I.panes_take(t, 'herdr-nvim-header') == 0; h = t['children'][0]['content']['pane']['header']
 assert h['content'] == {'mod': 'orc-panes', 'props': {'replaces': nv}} and h['height'] == 30, h
-once = json.dumps(t); assert I.panes_take(t) and json.dumps(t) == once
+once = json.dumps(t); assert I.panes_take(t, 'herdr-nvim-header') == 0 and json.dumps(t) == once
 assert I.panes_base(t, hp) == 'herdr-nvim-header'
 assert I.panes_release(t) and t == orig, t
 assert not I.panes_release(t)
 assert I.panes_files(hp, 'odd') is None
 bare = {'id': 'root', 'type': 'row', 'children': [{'id': 'main', 'type': 'block', 'content': {'tab': 'active'}}]}
-assert I.panes_base(bare, hp) == 'pane' and I.panes_take(bare) and I.panes_release(bare) and bare['children'][0]['content'] == {'tab': 'active'}, bare
-assert not I.panes_take({'id': 'root', 'type': 'row', 'children': []})\""
+assert I.panes_base(bare, hp) == 'pane' and I.panes_take(bare, 'pane') == 0 and I.panes_release(bare) and bare['children'][0]['content'] == {'tab': 'active'}, bare
+assert I.panes_take({'id': 'root', 'type': 'row', 'children': []}, 'pane') is None
+# a layout whose tab blocks show different headers: only those the base draws are taken
+mixed = {'id': 'root', 'type': 'row', 'children': [{'id': 'a', 'type': 'block', 'content': {'tab': 'active', 'pane': {'header': {'content': {'mod': 'pane'}}}}},
+  {'id': 'b', 'type': 'block', 'content': {'tab': 'active', 'pane': {'header': {'content': nv}}}}]}
+assert I.panes_base(mixed, hp) == 'pane' and I.panes_take(mixed, 'pane') == 1
+a, b = (I.herdr_tab_looks(mixed)[i]['pane']['header']['content'] for i in (0, 1))
+assert a == {'mod': 'orc-panes', 'props': {'replaces': {'mod': 'pane'}}} and b == nv, (a, b)\""
 check "orc-panes: around a third-party installer it gives the header back, then draws through the one left" "python3 -c \"
 import sys, json; sys.path.insert(0, '$REPO'); import install as I
 from pathlib import Path
 hp = Path('$NV'); lp = hp / 'layouts/x.json'
 t = {'id': 'root', 'type': 'row', 'children': [{'id': 'main', 'type': 'block', 'content': {'tab': 'active', 'pane': {'header': {'content': {'mod': 'pane'}}}}}]}
-I.panes_take(t); lp.write_text(json.dumps(t))
+I.panes_take(t, 'pane'); lp.write_text(json.dumps(t))
 m = {'herdr-app|' + str(hp): {'layout': 'x', 'panes': {'base': 'pane'}, 'files': []}}
 I.panes_hand_back(hp, m); h = I.herdr_tab_looks(json.loads(lp.read_text()))[0]['pane']['header']
 assert h['content'] == {'mod': 'pane'}, h
@@ -347,6 +387,12 @@ check "extras: an earlier .before-orc is never deleted" "! E --only alpha --forc
 rm -rf "$H/alpha.before-orc" "$H/mods/alpha"
 echo '{"global": {"cmd-alt-a": "mod.open:alpha"}}' > "$H/keys.json"
 check "extras: a key the user had bound to the same action stays on uninstall" "E --only alpha >/dev/null && E --uninstall --only alpha >/dev/null && python3 -c \"import json;g=json.load(open('$H/keys.json'))['global'];assert g.get('cmd-alt-a')=='mod.open:alpha',g\""
+TABS() { python3 -c "import json,sys;sys.path.insert(0,'$REPO');import install as I;print(json.dumps(I.herdr_find(json.load(open(sys.argv[1])),'tabs')[0].get('content')))" "$H/layouts/$1.json"; }
+cp "$H/layouts/mine2.json" "$H/layouts/mine3.json"
+E --only bar >/dev/null; echo '{"layout": "mine3"}' > "$H/shared.json"
+check "extras: a slot that moves to another layout gives the first one back" "E --only bar >/dev/null && [ \"\$(TABS mine2)\" = '{\"mod\": \"tabs\"}' ] && [ \"\$(TABS mine3)\" = '{\"mod\": \"bar\"}' ]"
+check "extras: uninstall then gives the second one back" "E --uninstall --only bar >/dev/null && [ \"\$(TABS mine3)\" = '{\"mod\": \"tabs\"}' ] && [ \"\$(TABS mine2)\" = '{\"mod\": \"tabs\"}' ]"
+echo '{"layout": "mine2"}' > "$H/shared.json"
 
 mkdir -p "$T/proj6"; python3 "$REPO/install.py" --cli agy --scope project --project "$T/proj6" >/dev/null
 PYDIR=$(dirname "$(command -v python3)")

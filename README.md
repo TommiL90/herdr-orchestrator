@@ -243,7 +243,15 @@ uninstall.
   `~/.local/state/orc/leads.json`, and the guard that CLI starts looks it up
   (OpenCode's plugin also passes the session's agent). So the guard applies
   once the orchestrator has run `orc.py` in that CLI session, which its
-  session start does; a restarted CLI is a new session.
+  session start does; a restarted CLI is a new session. pi keeps one process
+  across `/new` and `/resume`, so there the record is per conversation: a new
+  conversation is no orchestrator until it runs `/hcorc` (or `/herdorc`).
+- OpenCode 2.x runs the guard plugin through its `execute.before` hook, and
+  1.x from 1.18.29 through the same plugin's 1.x hook; earlier releases don't
+  load it.
+- Grok cuts a call's input past 128 KiB. The guard can't read such a command,
+  so in an orchestrator session it refuses the call and says to pass long text
+  in a file.
 - Codex runs a new or changed hook only after you approve it in `/hooks`.
   Cursor documents its hooks for the editor; `cursor-agent` ships the same
   hook runner, but its shell hooks are not documented separately.

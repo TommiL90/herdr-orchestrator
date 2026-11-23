@@ -94,9 +94,13 @@ check "strong inferred replaces explicit" "grep -q implementing ~/.local/state/o
 $ORC phase clear >/dev/null
 check "tab name untouched by phase" "[ \"\$(own_tab_name)\" = '$BEFORE' ]"
 if herdr-app commands | grep -q '"pane.rename"'; then
-  check "status: indicator active" "$ORC status | grep -q 'phase indicator: active'"
-else
-  check "status: indicator inactive" "$ORC status | grep -q 'phase indicator: inactive'"
+  check "status: indicator active" "$ORC status | grep -q 'phase indicator: active (pane name)'"
+else  # without pane.rename the orc-panes mod shows it: an app home of the test's own, with and without it
+  APPHOME=$(mktemp -d)
+  check "status: indicator inactive without orc-panes" "HERDR_APP_HOME=$APPHOME $ORC status | grep -q 'phase indicator: inactive'"
+  mkdir -p "$APPHOME/mods/orc-panes"
+  check "status: indicator in the pane header with orc-panes" "HERDR_APP_HOME=$APPHOME $ORC status | grep -q 'phase indicator: active (pane header)'"
+  rm -rf "$APPHOME"
 fi
 rm -f ~/.local/state/orc/phase-hcorc-$ROOT.json
 

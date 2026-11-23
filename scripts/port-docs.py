@@ -229,6 +229,10 @@ A["orchestrator-memory.md"] = [
     ("M9", "Memory lifecycle rule", "7",
      "Do NOT call the injected Engram review tool with action `mark_reviewed` automatically.",
      "Do NOT call Engram's `mem_review` with action `mark_reviewed` automatically.", None),
+    ("M10", "### Organic feature continuity (fallback only)", "13",
+     "proofs.md, mutations.md, verification.md",
+     "proofs.md, mutations.json, verification.md",
+     "tlc-spec-lean and the core (PROVENANCE-core.md 26) name the file mutations.json."),
 ]
 
 A["orchestrator-prompts.md"] = [
@@ -450,6 +454,7 @@ listed below are verbatim.
 10. Skill registry: the orchestrator resolves `SKILL.md` paths itself and lists them under `## Skills to load before work`; fallbacks kept.
 11. Tool names are neutral (ask tool, subagent tool, shell tool, todo tool; MCP tools by server and tool name); each CLI's prompt maps them to its own tools.
 12. Generated technical artifacts stay in English.
+13. Artifact file names follow the skill that writes them: tlc-spec-lean records mutations in `mutations.json`.
 X. Cross-reference to a source file outside this port's scope, neutralized (same treatment the task prescribes for the full-delegation profile).
 
 ## Out of scope and dropped references

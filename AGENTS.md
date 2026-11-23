@@ -54,7 +54,10 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
   (codex, opencode) an ask-class call is refused with the `ORC_CONFIRMED=1`
   rerun instruction. pi's extension shows an ask-class call in pi's dialog.
 - Outside Claude Code the guard knows the orchestrator from
-  `orc_state.record_lead` (`orc.py --as`) and `lead_of_session`. Tests that run
+  `orc_state.record_lead` (`orc.py --as`) and `lead_of_session`. Where a CLI
+  keeps one process across conversations (pi: `/new`, `/resume`), the record
+  is per conversation: `record_lead` reads it from `SESSION_VARS`
+  (`PI_SESSION_ID`) and the hook sends it as `session_id`. Tests that run
   `orc.py --as` set `ORC_LEADS` to a temp file.
 - `orc.py` identifies the orchestrator from `--as <agent>` or
   `$CLAUDE_CODE_AGENT`. The mods read its files, so keep these stable:
@@ -82,17 +85,23 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
   `install.py`'s `plugin update` picks it up.
 - `herdr-app/mods/orc-skills` reads `orc.py skills --json`; keep its `conflicts`
   and `skills` keys stable. Run `herdr-app check herdr-app/mods/orc-skills`
-  after changing it. Its layout node IDs (`orc-skills-bar`, `-toggle`,
+  after changing it; `seen.js` (which conflicts a toast reported) is pure, and
+  `tests/test_skills.sh` imports it. A new module of the mod goes in
+  `herdr_mod_files`. Its layout node IDs (`orc-skills-bar`, `-toggle`,
   `-panel`, and the `tabs-row` column around the bar, which a tab bar that
   grows taller resizes) are shared with `install.py`; never edit Herdr's
-  shipped layouts or mods (clone them). Herdr's file watcher doesn't look
-  through a mod folder's link, so `herdr_place` and `extras.py` make the link
-  again whenever a build changes: that is what reloads the mod.
+  shipped layouts or mods (clone them). The manifest's `tabs_row` says whether
+  the install made that column (uninstall removes only its own). Herdr's file
+  watcher doesn't look through a mod folder's link, so `herdr_place` and
+  `extras.py` make the link again whenever a build changes: that is what
+  reloads the mod.
 - `herdr-app/mods/orc-panes` becomes the layout's pane header and draws
   through a copy of the header it replaced: `panes_files` copies that mod's
   modules under `base/` at install, and `props.replaces` keeps it for
-  `panes_release`. Its labels `orc.pane-name` and `orc.phase` (`names.js`) are
-  shared with `orc.py` (`PHASE_LABEL`, `HcBackend.set_label`): change both
+  `panes_release`. `panes_take` takes only the headers drawn by that same mod,
+  so a layout that mixes headers keeps the others. Its labels `orc.pane-name`
+  and `orc.phase` (`names.js`) are shared with `orc.py` (`PHASE_LABEL`,
+  `HcBackend.set_label`): change both
   together. `extras.py` gives the header back around a mod's own installer or
   uninstaller (`panes_hand_back`, `panes_take_back`). The repo folder has no
   `base/`, so run `herdr-app check` on a build (the installed

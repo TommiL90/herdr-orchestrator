@@ -13,7 +13,7 @@ check() { if eval "$2"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL
 
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export HOME=$T/home; mkdir -p "$HOME" "$T/bin"
-unset CLAUDE_CODE_AGENT HC_TERMINAL_ID HERDR_SESSION HERDR_SOCKET_PATH
+unset CLAUDE_CODE_AGENT HC_TERMINAL_ID HERDR_SESSION HERDR_SOCKET_PATH HERDR_APP_HOME XDG_CONFIG_HOME
 for b in hc herdr herdr-app; do
   printf '#!/bin/sh\necho "%s $*" >> "%s/calls"\nexit 1\n' "$b" "$T" > "$T/bin/$b"; chmod +x "$T/bin/$b"
 done

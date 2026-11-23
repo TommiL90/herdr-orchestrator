@@ -261,7 +261,9 @@ def take_slot(name, slot_id, hp, manifest, entry):
         print(f"[{name}] {what} not changed: layout {target} has no `{slot_id}` block")
         return
     key = f"{slot_id}_slot"
-    slot = entry.get(key) if entry.get(key, {}).get("layout") == target else None
+    if entry.get(key, {}).get("layout") not in (None, target):
+        give_back_slot(hp, entry, slot_id)  # the slot moves: the layout it was in gets its own back
+    slot = entry.get(key)
     if slot is None:
         slot = {"layout": target, "mod": name, "previous": block[0].get("content")}
     before = json.dumps(tree)

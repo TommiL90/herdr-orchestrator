@@ -25,6 +25,7 @@ listed below are verbatim.
 10. Skill registry: the orchestrator resolves `SKILL.md` paths itself and lists them under `## Skills to load before work`; fallbacks kept.
 11. Tool names are neutral (ask tool, subagent tool, shell tool, todo tool; MCP tools by server and tool name); each CLI's prompt maps them to its own tools.
 12. Generated technical artifacts stay in English.
+13. Artifact file names follow the skill that writes them: tlc-spec-lean records mutations in `mutations.json`.
 X. Cross-reference to a source file outside this port's scope, neutralized (same treatment the task prescribes for the full-delegation profile).
 
 ## Out of scope and dropped references
@@ -38,13 +39,13 @@ X. Cross-reference to a source file outside this port's scope, neutralized (same
 |---|---|
 | `docs/orchestrator-delegation.md` | 15 |
 | `docs/orchestrator-delegation-reference.md` | 35 |
-| `docs/orchestrator-memory.md` | 9 |
+| `docs/orchestrator-memory.md` | 10 |
 | `docs/orchestrator-prompts.md` | 2 |
 | `docs/orchestrator-skills.md` | 7 |
 | `docs/orchestrator-tracking.md` | 7 |
 | `docs/orchestrator-verification.md` | 4 |
 | `docs/orchestrator-writer.md` | 7 |
-| **Total** | **86** |
+| **Total** | **87** |
 
 Every file also received adaptation **G0** (rule: Output): the provenance comment line plus one blank line prepended above the original first line.
 
@@ -233,7 +234,7 @@ Source: `assets/orchestrator-delegation-reference.md` @ `6ae777532`. Adaptations
 
 ## `docs/orchestrator-memory.md`
 
-Source: `assets/orchestrator-memory.md` @ `6ae777532`. Adaptations: 9 (+ G0).
+Source: `assets/orchestrator-memory.md` @ `6ae777532`. Adaptations: 10 (+ G0).
 
 - **M1** · Section: Preamble · Rule 1
   - Original: «Bind this to the parent Pi session only,»
@@ -264,6 +265,10 @@ Source: `assets/orchestrator-memory.md` @ `6ae777532`. Adaptations: 9 (+ G0).
 - **M9** · Section: Memory lifecycle rule · Rule 7
   - Original: «Do NOT call the injected Engram review tool with action `mark_reviewed` automatically.»
   - New: «Do NOT call Engram's `mem_review` with action `mark_reviewed` automatically.»
+- **M10** · Section: ### Organic feature continuity (fallback only) · Rule 13
+  - Original: «proofs.md, mutations.md, verification.md»
+  - New: «proofs.md, mutations.json, verification.md»
+  - Detail: tlc-spec-lean and the core (PROVENANCE-core.md 26) name the file mutations.json.
 
 ## `docs/orchestrator-prompts.md`
 

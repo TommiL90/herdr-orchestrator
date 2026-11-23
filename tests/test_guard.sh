@@ -195,7 +195,9 @@ my ($fmt, $shape) = split /:/, $spec; $shape //= $fmt;
 system("python3", "shared/bin/orc.py", "--as", "herdorc", "skills", "--json") if $record;
 my $j = sub { my $s = shift; $s =~ s/(["\\])/\\$1/g; $s =~ s/\n/\\n/g; "\"$s\"" };
 my $in = $shape eq "agy" ? '{"toolCall":{"name":"run_command","args":{"CommandLine":' . $j->($cmd) . '}}}'
+       : ($shape eq "pi" && $ENV{PI_IN}) ? '{"command":' . $j->($cmd) . ',"session_id":' . $j->($ENV{PI_IN}) . '}'
        : ($shape eq "cursor" || $shape eq "opencode" || $shape eq "pi") ? '{"command":' . $j->($cmd) . '}'
+       : $shape eq "grokcut" ? '{"hook_event_name":"PreToolUse","toolName":"run_terminal_command","toolInput":' . $j->('{"command":"' . $cmd . ' [truncated]') . ',"toolInputTruncated":true}'
        : $shape eq "grok" ? '{"hook_event_name":"PreToolUse","toolName":"run_terminal_command","toolInput":{"command":' . $j->($cmd) . '},"tool_name":"run_terminal_command","tool_input":{"command":' . $j->($cmd) . '}}'
        : '{"tool_input":{"command":' . $j->($cmd) . '}}';
 open(my $p, "|-", "shared/bin/guard.py --format $fmt >$ENV{FAKE}/out 2>&1") or die;
@@ -243,11 +245,27 @@ f ask      pi       'ORC_CONFIRMED=1 hc server stop'
 # Grok also runs Claude Code's and Cursor's hook files: their guards stay out of its calls
 f 0        claude:grok 'herdr server stop'
 f 0        cursor:grok 'herdr server stop'
+# Grok cuts an input past 128 KiB to a string: unreadable, so an orchestrator's call is refused
+f deny     grok:grokcut 'cat > big.txt <<EOF'
+f 0        grok:grokcut 'cat > big.txt <<EOF' 0
 # a CLI session that never ran orc.py --as is not the orchestrator
 f 0        cursor   'herdr server stop' 0
 f 0        codex    'herdr server stop' 0
 f 0        grok     'herdr server stop' 0
 f 0        pi       'herdr server stop' 0
+# pi keeps its process across /new and /resume: orc.py --as records the conversation
+# (PI_SESSION_ID), the extension sends the one a call comes from (PI_IN here)
+export PI_SESSION_ID=s1 PI_IN=s1; f deny pi 'herdr server stop'
+export PI_IN=s2; f 0 pi 'herdr server stop'
+unset PI_SESSION_ID PI_IN
+HOME=$FAKE/home ORC_LEADS=$FAKE/leads.json python3 -c "
+import os, sys; sys.path.insert(0, 'shared/bin'); import orc_state as s
+os.environ['PI_SESSION_ID'] = 's1'; s.record_lead('herdorc')
+os.environ['PI_SESSION_ID'] = 's2'; s.record_lead('hcorc')
+assert [s.lead_of_session(c) for c in ('s1', 's2', 's3', '')] == ['herdorc', 'hcorc', '', 'hcorc']
+del os.environ['PI_SESSION_ID']; s.record_lead('herdorc')  # a CLI that names no conversation
+assert s.lead_of_session('s3') == 'herdorc'
+" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL leads per conversation"; }
 # another tool's call (agy) is not a shell command
 printf '%s' '{"toolCall":{"name":"view_file","args":{"CommandLine":"herdr server stop"}}}' | HOME=$FAKE/home shared/bin/guard.py --format agy >"$FAKE/out" 2>&1
 if [ $? = 0 ] && [ ! -s "$FAKE/out" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL agy view_file"; fi

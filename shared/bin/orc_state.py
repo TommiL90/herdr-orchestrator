@@ -215,11 +215,22 @@ def session_processes(limit, start=None):
     return out
 
 
+# The conversation a CLI runs inside its process, where it tells its shell commands:
+# pi starts a new one in the same process with /new and goes back with /resume.
+SESSION_VARS = ("PI_SESSION_ID",)
+
+
+def _conversation():
+    return next((os.environ[v] for v in SESSION_VARS if os.environ.get(v)), "")
+
+
 def record_lead(agent):
-    """Remember that the CLI session above this process runs `agent` (an orchestrator)."""
+    """Remember that the CLI session above this process runs `agent` (an orchestrator),
+    and, where the CLI names it, in which of its conversations."""
     keys = session_processes(2)
     if not keys:
         return
+    conversation = _conversation()
     alive = {f"{pid}:{p[1]}" for pid, p in _processes().items()}
     with locked(LEADS):
         try:
@@ -228,12 +239,18 @@ def record_lead(agent):
             data = {}
         data = {k: v for k, v in data.items() if k in alive} if isinstance(data, dict) else {}
         for k in keys:
-            data[k] = agent
+            if not conversation:
+                data[k] = agent
+                continue
+            old = data.get(k) if isinstance(data.get(k), dict) else {}
+            data[k] = {"agent": agent, "sessions": {**old.get("sessions", {}), conversation: agent}}
         write_atomic(LEADS, json.dumps(data, indent=1) + "\n")
 
 
-def lead_of_session():
-    """The orchestrator the calling CLI session runs, as recorded by record_lead, or ''."""
+def lead_of_session(conversation=""):
+    """The orchestrator the calling CLI session runs, as recorded by record_lead, or ''.
+    `conversation`: the CLI's conversation the call comes from, where it names one; a
+    process that recorded its conversations leads only in those."""
     try:
         data = json.loads(LEADS.read_text())
     except (OSError, ValueError):
@@ -241,7 +258,10 @@ def lead_of_session():
     if not isinstance(data, dict):
         return ""
     for k in session_processes(1):
-        if data.get(k):
-            return data[k]
+        lead = data.get(k)
+        if isinstance(lead, dict):
+            sessions = lead.get("sessions") or {}
+            return sessions.get(conversation, "") if conversation and sessions else lead.get("agent", "")
+        if lead:
+            return lead
     return ""
-

@@ -10,6 +10,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, notify, home, checking, layout, run, props, window as herdrWindow } from "herdr";
 import { PANEL, TOGGLE, find, location, contextKey, current, load } from "./skills.js";
+import { unseen } from "./seen.js";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const stop = (_e, cx) => cx.stop_propagation();
@@ -45,20 +46,12 @@ export default class OrcSkills extends View {
     });
   }
 
-  // One toast each time a set of conflicts changes. Conflicts with a project copy are kept
-  // per project; those between user and orchestrator copies are the same in every folder
-  // (outside a git repo each folder is its own project), so they share one key.
+  // One toast each time a set of conflicts changes (seen.js: per project, and one
+  // global set for the user/orchestrator copies).
   announce(r) {
     const { project, conflicts } = r.data ?? {};
     if (!Array.isArray(conflicts)) return;
-    const local = (c) => c.use?.scope === "project" || (c.shadows ?? []).some((s) => s.scope === "project");
-    const changed = [];
-    for (const [key, list] of [[project, conflicts.filter(local)], ["~", conflicts.filter((c) => !local(c))]]) {
-      const sig = list.map((c) => `${c.skill}:${c.use?.scope}`).sort().join(",");
-      if ((this.seen[key] ?? "") === sig) continue;
-      if (sig) this.seen[key] = sig; else delete this.seen[key];
-      changed.push(...list);
-    }
+    const changed = unseen(this.seen, project, conflicts);
     try { localStorage.setItem("seen", JSON.stringify(this.seen)); } catch {}
     if (!changed.length) return;
     const first = changed[0], more = conflicts.length - 1;
