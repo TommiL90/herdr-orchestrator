@@ -20,8 +20,13 @@ ROLES = [
     "review-refuter",
 ]
 
+# The economical model a role's description promises; install.py maps it per CLI.
+MODELS = {"gentle-ai-explore": "haiku"}
+
 CHANNEL = ("Return your result to the orchestrator through the channel named in the handoff "
-           "(your final message, a report file, or a command such as `hc send`).")
+           "(your final message, a report file, or a multiplexer command the handoff gives). "
+           "Writing that report file and running that command are allowed even where this role is "
+           "read-only or runs no commands; they are the only exception.")
 
 TOOL_MAP = {
     "read": ["Read"], "grep": ["Grep"], "find": ["Glob"], "ls": ["Glob"],
@@ -55,7 +60,7 @@ EDITS = {
          "1", "Harness name replaced."),
         ("Bullet 1 (structural questions), sentence 1",
          "use the cwd-scoped `codegraph` tool before broad filesystem searches.",
-         "use CodeGraph scoped to the current workspace (for example `mcp__codegraph__codegraph_explore`, when available) before broad filesystem searches.",
+         "use CodeGraph scoped to the current workspace (for example CodeGraph's `codegraph_explore`, when available) before broad filesystem searches.",
          "2", "Pi tool `codegraph` (cwd-scoped by the Pi extension) replaced by neutral CodeGraph wording with the Claude Code MCP name as an example, conditioned on availability."),
         ("Bullet 1 (structural questions), sentence 2",
          "Initialize the workspace index with `operation: \"init\"` when it is absent, then use `query` or `explore`; never ask it to target another path.",
@@ -116,7 +121,7 @@ EDITS = {
          "2", "Pi tool name `bash` replaced by neutral wording. Scope of allowed commands unchanged."),
         ("## Memory safety, sentence 1",
          "Use `mem_save` only when the parent supplies a validated project name",
-         "Use Engram `mem_save` (`mcp__engram__mem_save`) only when it is callable and the parent supplies a validated project name",
+         "Use Engram `mem_save` (Engram's `mem_save`) only when it is callable and the parent supplies a validated project name",
          "5", "Mapped to the Engram MCP name and conditioned on being callable. All other memory restrictions unchanged."),
         ("## Return contract (new first paragraph)",
          *channel_before("Return one compact handoff using the schema below;"),
@@ -215,7 +220,7 @@ def main():
             if n != 1:
                 sys.exit(f"{role}: expected exactly 1 occurrence, found {n}: {old!r}")
             new = new.replace(old, rep)
-        header = (f"<!-- Ported from tomidev-shell@{COMMIT} assets/agents/{role}.md; adapted for Claude Code "
+        header = (f"<!-- Ported from tomidev-shell@{COMMIT} assets/agents/{role}.md; adapted for any coding CLI "
                   f"and other CLIs. Adaptations: shared/PROVENANCE-roles.md -->\n# Role: {role}\n\n")
         (DST / "roles" / f"{role}.md").write_text(header + new)
 
@@ -231,8 +236,11 @@ def main():
                 if m not in tools:
                     tools.append(m)
         readonly = not ({"edit", "write"} & set(meta["tools"]))
-        roles_json.append({"name": role, "description": desc, "tools": tools,
-                           "readonly": readonly, "source_tools": meta["tools"]})
+        entry = {"name": role, "description": desc, "tools": tools,
+                 "readonly": readonly, "source_tools": meta["tools"]}
+        if role in MODELS:
+            entry["model"] = MODELS[role]
+        roles_json.append(entry)
         counts[role] = len(EDITS[role])
         prov_roles.append((role, meta, desc, tools, readonly))
 
@@ -250,8 +258,8 @@ def render_provenance(prov_roles, counts):
       "`assets/agents/<name>.md`. The source repository was read only, never modified.\n")
     w("Destination: `shared/roles/<name>.md` (body only, no YAML frontmatter) and "
       "`shared/roles/roles.json` (Claude Code metadata).\n")
-    w("Each role runs either in a herdr pane under any coding-agent CLI (told to read the role file) or as a "
-      "Claude Code subagent with the same name. Bodies are therefore harness-agnostic; Claude Code tool names "
+    w("Each role runs either in a role pane under any coding-agent CLI (told to read the role file) or as a "
+      "internal subagent with the same name. Bodies are therefore harness-agnostic; Claude Code tool names "
       "live only in `roles.json`.\n")
     w("## Rule legend\n")
     w("1. \"Tomidev Shell\" as the harness → \"the orchestrator\".")
@@ -268,7 +276,7 @@ def render_provenance(prov_roles, counts):
     w("| # | Section | Original | New | Rule |")
     w("|---|---|---|---|---|")
     w("| C1 | File head | YAML frontmatter (`name`, `description`, `tools`) | Removed from the body; carried in `roles.json` (`name`, `description`, `source_tools`, mapped `tools`, `readonly`) | Output |")
-    w(f"| C2 | File head | (none) | Line 1: `<!-- Ported from tomidev-shell@{COMMIT} assets/agents/<name>.md; adapted for Claude Code and other CLIs. Adaptations: shared/PROVENANCE-roles.md -->` | Output |")
+    w(f"| C2 | File head | (none) | Line 1: `<!-- Ported from tomidev-shell@{COMMIT} assets/agents/<name>.md; adapted for the hcorc/herdorc orchestrators, any coding CLI. Adaptations: shared/PROVENANCE-roles.md -->` | Output |")
     w("| C3 | File head | (none) | Line 2: `# Role: <name>`, then one blank line, then the source body | Output |")
     w(f"\nThe exact sentence used for every rule-4 change (\"CHANNEL\" below):\n\n> {CHANNEL}\n")
     w("## Per-role body adaptations\n")
@@ -312,7 +320,7 @@ KEPT_AND_AMBIGUITIES = """## Kept verbatim on purpose
 These source phrases looked harness-specific but still hold, so they were not changed:
 
 - \"parent\", \"parent task\", \"parent orchestrator\" (all roles): the orchestrator is the parent in both run modes.
-- \"When resumed in the same child session\" (explore, worker, verify): still holds for a resumed Claude Code subagent and for a herdr pane session that receives follow-ups.
+- \"When resumed in the same child session\" (explore, worker, verify): still holds for a resumed internal subagent and for a role pane session that receives follow-ups.
 - \"delegate to child agents\" / \"Do not delegate to child agents\" (explore, verify): behavioural rule, harness-neutral.
 - \"builtin lanes\", \"builtin feature contract\", \"builtin test-first policy\", `.agents/designs/features/<feature>/`, `plan.md`, `checks.md`, `S#`/`C#` (explore, worker, verify, judges): ODD fallback conventions, kept because the rules depend on them (see Ambiguities).
 - \"no TUI toggle or per-task chat choice is needed\" (worker), \"never demand a TUI or chat toggle\" (verify): prohibitions that still hold.
@@ -324,12 +332,12 @@ These source phrases looked harness-specific but still hold, so they were not ch
 
 ## Ambiguities (decisions for the maintainer)
 
-1. explore, tools `codegraph` → `mcp__codegraph__codegraph_explore`. Source: \"use the cwd-scoped `codegraph` tool ... Initialize the workspace index with `operation: \"init\"` when it is absent\". The Pi tool could initialize the index; the Claude Code MCP explore tool cannot, and the local CodeGraph MCP server says indexing is the user's decision. The port keeps initialization only \"through an initialization operation your CodeGraph tool provides\", so in Claude Code an absent index falls through to the read/search fallback.
+1. explore, tools `codegraph` → CodeGraph's `codegraph_explore`. Source: \"use the cwd-scoped `codegraph` tool ... Initialize the workspace index with `operation: \"init\"` when it is absent\". The Pi tool could initialize the index; the Claude Code MCP explore tool cannot, and the local CodeGraph MCP server says indexing is the user's decision. The port keeps initialization only \"through an initialization operation your CodeGraph tool provides\", so in Claude Code an absent index falls through to the read/search fallback.
 2. explore, tools `web_enable` → dropped. Source: \"Use `web_enable` if activation is needed.\" Claude Code web tools need no activation tool.
 3. explore, tools `web_search` → WebSearch; `fetch_content` → WebFetch (pi-web-access: \"Fetch web pages, PDFs, and GitHub repos\"; Claude Code WebFetch does not clone GitHub repos).
 4. explore, tools `source_check` → WebSearch + WebFetch. pi-web-access: \"Gather cited web passages about a claim for manual review.\" No single Claude Code equivalent.
 5. explore, tools `get_search_content` → WebFetch. pi-web-access: \"Page through or search stored content from web_search, source_check, or fetch_content by responseId.\" Claude Code has no stored-result paging; WebFetch is only the closest.
-6. explore, description kept verbatim: \"Read-only local and web exploration on its configured economical model.\" `roles.json` has no model field, so nothing configures an economical model. Consider adding a `model` field (or a Claude Code `model:` frontmatter at install time), or dropping the clause.
+6. explore, description kept verbatim: \"Read-only local and web exploration on its configured economical model.\" `MODELS` gives it `\"model\": \"haiku\"` in `roles.json`, which `install.py` maps per CLI.
 7. worker, verify, `.gitignore` claim kept: \"Prefer the dedicated `grep`/`find` tools over raw `bash` grep — they honour `.gitignore`.\" True for the Pi tools; not verified for every CLI's search tools.
 8. worker, single-call edits: \"Make all edits to one file in one `edit` call\". Claude Code Edit replaces one span per call, so the rule was conditioned on edit-tool capability.
 9. worker, \"native authority and all other applicable limits remain binding\": Tomidev/Pi term (also in the golden prompt: \"within native authority you own the next step\") for the agent's granted permission envelope. Kept verbatim.

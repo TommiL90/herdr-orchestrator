@@ -73,6 +73,17 @@ ADAPT = {
          "Each repo has its own branch and toolchain; the workspace has no Git repository or root runner.",
          "In a multi-repo workspace each repo has its own branch and toolchain, and the workspace root has no\n"
          "Git repository or root runner."),
+        ("references/checks.md", "L5",
+         "The upstream cites rule 9 (handoff persistence) for captured screens; the rule on binding visual "
+         "sources is rule 6.",
+         "feature does not change, reached through the nav: the author's `**Walked:**` line names the visit.\n"
+         "[SKILL.md](../SKILL.md) rule 9.",
+         "feature does not change, reached through the nav: the author's `**Walked:**` line names the visit.\n"
+         "[SKILL.md](../SKILL.md) rule 6."),
+        ("references/checks.md", "L6",
+         "The upstream cites rule 6 (visual sources) for the mutation count; the mutation rule is rule 5.",
+         "not change: [SKILL.md](../SKILL.md) rule 6.",
+         "not change: [SKILL.md](../SKILL.md) rule 5."),
     ],
     "gentle-ui-design": [
         ("SKILL.md", "G1",
@@ -100,7 +111,7 @@ def git(*args):
 
 
 def header(name):
-    return (f"<!-- Ported from tomidev-shell@{COMMIT} skills/{name}/; adapted for Claude Code and other CLIs "
+    return (f"<!-- Ported from tomidev-shell@{COMMIT} skills/{name}/; adapted for the hcorc/herdorc orchestrators, any coding CLI "
             f"(hcorc/herdorc). Adaptations: shared/PROVENANCE-skills.md -->\n")
 
 

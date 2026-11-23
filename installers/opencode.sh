@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install hcorc, herdorc and the ten roles into opencode: primary agents, subagents, /<agent>-* commands.
+# Install hcorc, herdorc and the ten roles into opencode: primary agents, subagents, /<agent>-* commands, the guard plugin.
 #
 #   installers/opencode.sh                     for your user, in ~/.config/opencode
 #   installers/opencode.sh --scope project [--project DIR]   in DIR/.opencode (default: current dir)

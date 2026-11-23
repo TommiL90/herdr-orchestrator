@@ -13,6 +13,6 @@ allowed-tools: Bash({{ORC}} preflight {{AGENT}})
 Summarize the state above for the user as a table: role pane, address, owner
 (you or someone else), agent, status. Then name which of the three core roles
 (gentle-ai-explore, gentle-ai-worker, gentle-ai-verify) have no pane yet; the
-other roles get panes only on request (`/{{AGENT}}-panes judges|review|all`).
+other roles get panes only on request (`{{CMD}}{{AGENT}}-panes judges|review|all`).
 For any pane whose status is `blocked` or `error`, read its screen and say
 exactly what it needs. Change nothing.

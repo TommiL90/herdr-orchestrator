@@ -24,5 +24,5 @@ gentle-ai-worker, gentle-ai-verify).
    that role, create your own `<role>-2` (`{{ORC}} ensure <role>`), or use the
    internal subagent for that role.
 4. Tell the user to start any coding agent (claude, codex, opencode, agy,
-   cursor-agent, grok, td, ...) in each new pane. You will give each one its
+   cursor-agent, grok, pi, td, ...) in each new pane. You will give each one its
    role on its first task.

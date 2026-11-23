@@ -1,4 +1,4 @@
-<!-- Ported from tomidev-shell@6ae777532 assets/orchestrator-skills.md; adapted for Claude Code (hcorc/herdorc). Adaptations: shared/PROVENANCE-docs.md -->
+<!-- Ported from tomidev-shell@6ae777532 assets/orchestrator-skills.md; adapted for the hcorc/herdorc orchestrators, any coding CLI. Adaptations: shared/PROVENANCE-docs.md -->
 
 # Orchestrator — Skills Detail (lazy-loaded)
 
@@ -6,7 +6,7 @@ Bind this to the parent orchestrator session only, on skill resolution/discovery
 
 ## Skill Registry Protocol
 
-The effective view is the session's available-skills listing (`<available_skills>` where the CLI renders it; in Claude Code, the skills listed for the Skill tool) plus the on-disk rows the orchestrator resolves itself: on each primary-session agent start, it lists the `SKILL.md` files found in project and other agents' skill directories that the session did not load (every skill when the session renders no available-skills listing); there are no on-disk rows when there are none. An on-disk row whose name is also in the available-skills listing won precedence (a project copy outranks a user or package copy); use the on-disk row. In the available-skills listing the `Trigger / description` is the skill's description (`<description>`) and the `Path` is its location (`<location>`); when the listing shows no path, resolve the exact `SKILL.md` path on disk. Use this view to select skills and delegate:
+The effective view is the session's available-skills listing (`<available_skills>` where the CLI renders it, or whatever skill list the CLI gives its agent) plus the on-disk rows the orchestrator resolves itself: on each primary-session agent start, it lists the `SKILL.md` files found in project and other agents' skill directories that the session did not load (every skill when the session renders no available-skills listing); there are no on-disk rows when there are none. An on-disk row whose name is also in the available-skills listing won precedence (a project copy outranks a user or package copy); use the on-disk row. In the available-skills listing the `Trigger / description` is the skill's description (`<description>`) and the `Path` is its location (`<location>`); when the listing shows no path, resolve the exact `SKILL.md` path on disk. Use this view to select skills and delegate:
 
 1. Match task context and target files against the effective view's `Trigger / description` column.
 2. Pass only matching exact `Path` values to subagents under `## Skills to load before work`. Match the delegated task's own files and actions, never a fixed set: a child that will not commit gets no commit skill, and one that writes no docs gets no docs skill.

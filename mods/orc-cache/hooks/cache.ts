@@ -198,9 +198,64 @@ export function parseWait(command: string, runInBackground: boolean, bashTimeout
   return found
 }
 
-/** The --timeout to suggest for a wait that must end inside `ttl`, in the tool's own unit. */
-export function suggestedTimeout(tool: Wait['tool'], ttl: Ttl): string {
-  const ms = ttlMs(ttl) - WAIT_MARGIN_MS
+// Keep-alive ("warm"): while the orchestrator waits, a fork of its own last request
+// reads the cached prefix again, which renews the entry. Prices relative to plain
+// input: a cache read costs 0.1, a write 1.25 (5m) or 2 (1h). A ping costs one read;
+// a lapse costs a write instead of the next request's read.
+const READ_PRICE = 0.1
+const WRITE_PRICE: Record<Ttl, number> = { '5m': 1.25, '1h': 2 }
+/** A ping fires this long before the entry lapses. */
+export const WARM_LEAD_MS = 30_000
+
+/**
+ * Pings per wait that still cost less than the rewrite they prevent: 11 for 5m,
+ * 19 for 1h. Past it, pinging stops, so a wait that outlasts every ping costs at
+ * most about two rewrites instead of one (the end of a wait is not known ahead).
+ */
+export function warmBudget(ttl: Ttl): number {
+  return Math.floor((WRITE_PRICE[ttl] - READ_PRICE) / READ_PRICE + 1e-9)
+}
+
+/**
+ * The longest wait warming covers from now: the entry's time left, plus TTL - lead for
+ * each ping still in the budget (a ping renews the entry WARM_LEAD_MS before it lapses).
+ * A fresh 5m entry: 300 s + 11 x 270 s = 3,270 s.
+ */
+export function warmSpanMs(ttl: Ttl, leftMs: number = ttlMs(ttl), pingsLeft: number = warmBudget(ttl)): number {
+  return Math.max(0, leftMs) + Math.max(0, pingsLeft) * (ttlMs(ttl) - WARM_LEAD_MS)
+}
+
+/** Once a wait ends, the next request starts within this. */
+const NEXT_REQUEST_MS = 5_000
+
+export type WarmState = {
+  /** The pending wait ends by then ($.clock ms); 0 when none is pending. */
+  until: number
+  /** Pings since the last real request. */
+  pings: number
+  /** A ping or a main-loop request is out. */
+  busy: boolean
+}
+
+/**
+ * True when a ping now would keep a live entry from lapsing during a pending wait: one
+ * that ends early enough for the next request to read the entry needs no ping.
+ */
+export function shouldWarm(s: Sample | null, ttl: Ttl, now: number, w: WarmState, minTokens: number): boolean {
+  if (!s || w.busy || now >= w.until || w.pings >= warmBudget(ttl)) return false
+  if (s.read + s.write === 0 || promptTokens(s) < minTokens) return false
+  const left = remainingMs(s, ttl, now)
+  return left > 0 && left <= WARM_LEAD_MS && w.until > now + left - NEXT_REQUEST_MS
+}
+
+/** A fork renewed the entry when it read most of the prefix from the cache. */
+export function renewed(s: Sample, forkRead: number): boolean {
+  return forkRead >= promptTokens(s) * 0.5
+}
+
+/** The --timeout to suggest for a wait that must end inside `ttl` (or a keep-alive span), in the tool's own unit. */
+export function suggestedTimeout(tool: Wait['tool'], ttl: Ttl, spanMs: number = ttlMs(ttl)): string {
+  const ms = spanMs - WAIT_MARGIN_MS
   return tool === 'hc' ? `--timeout ${Math.floor(ms / 1000)}` : `--timeout ${ms}`
 }
 

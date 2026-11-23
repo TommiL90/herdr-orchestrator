@@ -1,4 +1,4 @@
-<!-- Ported from tomidev-shell@6ae777532 assets/orchestrator-delegation-reference.md; adapted for Claude Code (hcorc/herdorc). Adaptations: shared/PROVENANCE-docs.md -->
+<!-- Ported from tomidev-shell@6ae777532 assets/orchestrator-delegation-reference.md; adapted for the hcorc/herdorc orchestrators, any coding CLI. Adaptations: shared/PROVENANCE-docs.md -->
 
 # Orchestrator — Delegation Reference (lazy-loaded)
 
@@ -28,7 +28,7 @@ Classification stays untrusted and non-authoritative. Existing caps apply.
 
 ## Runtime Overlays
 
-These sections bind generic delegation to the orchestrator's runtime (Claude Code plus the layer's Role dispatch protocol), adding routing without changing ODD ownership.
+These sections bind generic delegation to the orchestrator's runtime (the coding CLI it runs in plus the layer's Role dispatch protocol), adding routing without changing ODD ownership.
 
 ### Subagent-facing English
 
@@ -40,7 +40,7 @@ These rules select execution topology, not the implementation method. Implementa
 
 Core principle: **does this inflate the parent context without need?** If yes, use one bounded worker. If no, do it inline.
 
-Progress shows in the todo list (the session's todo list tool, e.g. TodoWrite, when available); no runtime publishes it elsewhere: never declare a subject or publish state just to report status. Before work beyond small direct tasks, declare a `subject`, and share own `state` (with the user or across sessions and panes) only for objective, decisions, blockers, or work. Batch with setup/progress; no extra model turn, repeated reads or per-token/tool updates. Exclude private prompts, internal instructions and credentials. Published notes are metadata, never consent; helper reasoning requires the user's explicit permission for its model cost (no model-cost UI dialog exists here).
+Progress shows in the todo list (the todo tool, when available); no runtime publishes it elsewhere: never declare a subject or publish state just to report status. Before work beyond small direct tasks, declare a `subject`, and share own `state` (with the user or across sessions and panes) only for objective, decisions, blockers, or work. Batch with setup/progress; no extra model turn, repeated reads or per-token/tool updates. Exclude private prompts, internal instructions and credentials. Published notes are metadata, never consent; helper reasoning requires the user's explicit permission for its model cost (no model-cost UI dialog exists here).
 
 | Action | Direct inline | Delegated direct worker |
 |--------|---------------|-------------------------|
@@ -62,11 +62,11 @@ Keep each delegated writer bounded, with a short synthesized handoff. Delegation
 
 #### Trigger Runtime Bindings
 
-Once a trigger fires, the parent MUST delegate through the best available subagent runtime: the layer's Role dispatch protocol. Prefer a herdr pane for the role when available; otherwise use the internal Claude Code subagent of the same name (Agent tool); never fall back to a pane, terminal, session, window, or remote worker outside that protocol. Do not replace a required delegation with inline execution. Do not inject these as child-agent permission to spawn subagents; children receive concrete role work and must not orchestrate.
+Once a trigger fires, the parent MUST delegate through the best available subagent runtime: the layer's Role dispatch protocol. Prefer a role pane for the role when available; otherwise use the internal subagent of the same name (subagent tool); never fall back to a pane, terminal, session, window, or remote worker outside that protocol. Do not replace a required delegation with inline execution. Do not inject these as child-agent permission to spawn subagents; children receive concrete role work and must not orchestrate.
 
 The canonical Writer rule under Delegation Triggers overrides this general runtime preference.
 
-1. **Evidence-budget rule**: when the reading exceeds the evidence budget, launch the closest read-only mapping role with fresh context and a narrow mapping task that returns a handoff of at most ~2k tokens with `path:line` evidence. Route generic exploration first to `gentle-ai-explore` through the layer's Role dispatch protocol (a herdr pane when available); if no pane is available, use the internal Claude Code subagent of the same name with the same read-only mapping task and report the fallback; with neither available, report it as unavailable.
+1. **Evidence-budget rule**: when the reading exceeds the evidence budget, launch the closest read-only mapping role with fresh context and a narrow mapping task that returns a handoff of at most ~2k tokens with `path:line` evidence. Route generic exploration first to `gentle-ai-explore` through the layer's Role dispatch protocol (a role pane when available); if no pane is available, use the internal subagent of the same name with the same read-only mapping task and report the fallback; with neither available, report it as unavailable.
 2. **Writer rule**: follow the canonical Writer rule under Delegation Triggers.
 3. **Incident rule**: after wrong `cwd`, accidental repository/worktree mutation, failed merge recovery, confusing test command, or environment workaround, stop and diagnose the incident separately before resuming.
 4. **Context backstop**: when the context backstop applies (judged by the orchestrator; no runtime signals it here), pause and delegate the next unit that needs several steps instead of silently continuing monolithically; single small edits stay inline.
@@ -84,35 +84,35 @@ Use inline execution when the task is small by the always-on Task Size section: 
 
 Delegate when a mechanism's own trigger fires, within the ODD workflow: understanding an unfamiliar module beyond the evidence budget (explore), implementing a unit with a Writer rule reason (writer), or checking a high-risk change (independent verifier).
 
-Use the configured subagent runtime when available. Prefer the layer's Role dispatch protocol (a herdr pane when available, else the internal Claude Code subagent of the same name), because it runs the user's configured role definitions and preserves history/background behavior.
+Use the configured subagent runtime when available. Prefer the layer's Role dispatch protocol (a role pane when available, else the internal subagent of the same name), because it runs the user's configured role definitions and preserves history/background behavior.
 
 For bounded writes, follow the canonical Writer rule under Delegation Triggers.
 
 <!-- background-subagents -->
 #### Background Subagent Policy
 
-Background execution is policy-gated: the always-on orchestrator prompt renders one status line, `Background subagent policy: on|off (capability: ready|absent)`. If the policy is off OR no background-capable dispatch is available, run every delegation in the foreground — the Agent tool without `run_in_background` for internal subagents; for pane dispatch, wait for its result as the layer's Role dispatch protocol defines before continuing — always.
+Background execution is policy-gated: the always-on orchestrator prompt renders one status line, `Background subagent policy: on|off (capability: ready|absent)`. If the policy is off OR no background-capable dispatch is available, run every delegation in the foreground — the subagent tool in the foreground for internal subagents; for pane dispatch, wait for its result as the layer's Role dispatch protocol defines before continuing — always.
 
-When the policy is on and background-capable dispatch is available (the Agent tool's `run_in_background` for internal subagents, or pane dispatch):
+When the policy is on and background-capable dispatch is available (the subagent tool's background option for internal subagents, or pane dispatch):
 
-- Claude Code does not default to background, so pass the Agent tool's `run_in_background: true` for ordinary internal-subagent delegation; pane dispatch is asynchronous by nature. Either returns at once (a task id or the pane/worker identity); the terminal stays free and the human keeps typing. Pass a `label` of three to six words naming the work (the Agent tool's `description`, or the pane/worker name the layer uses).
-- A child that ends a turn retains its latest answer, but that is not completion: its CLI or subagent may still retry, compact, or run a queued follow-up. Treat the task as finished only once it has settled (for internal subagents, the Agent tool's completion notification; for panes, the completion condition the layer's Role dispatch protocol defines); only then release its slot, publish its background result, or terminate it. If it exits first, report failure with its retained answer as diagnostics.
+- The CLIs do not default to background, so use the subagent tool's background option for ordinary internal-subagent delegation; pane dispatch is asynchronous by nature. Either returns at once (a task id or the pane/worker identity); the terminal stays free and the human keeps typing. Pass a `label` of three to six words naming the work (the subagent tool's `description`, or the pane/worker name the layer uses).
+- A child that ends a turn retains its latest answer, but that is not completion: its CLI or subagent may still retry, compact, or run a queued follow-up. Treat the task as finished only once it has settled (for internal subagents, the subagent tool's completion notification; for panes, the completion condition the layer's Role dispatch protocol defines); only then release its slot, publish its background result, or terminate it. If it exits first, report failure with its retained answer as diagnostics.
 - When a background task settles, its result arrives as a message in this session (for internal subagents, one completion notification per task; for panes, as the layer's Role dispatch protocol defines) and starts a new turn if you are idle. Wait for it: end the turn once launches and any non-overlapping work are done. Never sleep or periodically poll status or results for completion or cache maintenance; pane waits follow the layer. Retain the task ID (or pane/worker identity). Check status (a pane's state, as the layer defines) only at a real orchestration decision boundary: user-requested inspection, relevant scope change, input request, or suspected abnormal behavior. Never relaunch equivalent work merely because it is queued or running. Cache warming belongs to the CLI's native runtime, never to model-driven maintenance turns.
 - Do not claim an implementation ready while its required verification or correction follow-up remains queued. Run the required focused verification before that claim, and retain legitimate post-correction verification. This does not invent a universal full-suite requirement or make a receipt a delivery gate.
-- Run an internal subagent in the foreground (no `run_in_background`) only when the subagent must ask the human something mid-flight (foreground dialogs, such as permission prompts, reach the human; background dialogs may not; a pane's CLI asks the human in its own pane) or when the human asked to wait.
+- Run an internal subagent in the foreground (not in the background) only when the subagent must ask the human something mid-flight (foreground dialogs, such as permission prompts, reach the human; background dialogs may not; a pane's CLI asks the human in its own pane) or when the human asked to wait.
 - Launch as many independent tasks as the work has; no runner queues here, so stay within any concurrency limit the layer sets. Do not duplicate launches or work, and do not overlap files or topics.
 - Finished tasks persist across restarts only where the session or pane still holds their result; running internal subagents are stopped when the orchestrator session exits and must be relaunched, never claimed as recovered; a pane's work counts as recovered only from what the pane observably shows.
 <!-- /background-subagents -->
 
-Waiting on CI, a build, or a server is not delegation: use the Bash tool's `run_in_background` (or the layer's background runner) with the wait inside the command and end the turn. Never `sleep`, poll, or spend a subagent to wait.
+Waiting on CI, a build, or a server is not delegation: use the shell tool's background mode (or the layer's background runner) with the wait inside the command and end the turn. Never `sleep`, poll, or spend a subagent to wait.
 
 For generic mapping, follow the Evidence-budget rule in the delegation card.
 
 The canonical Writer rule under Delegation Triggers overrides the general runtime preference above.
 
-Delegate generic verification that executes or delegates commands per the Verification rule (trigger 3 under Delegation Triggers) -- the routing lives in `orchestrator-verification.md`, not here: the bounded writer always self-verifies via `## Verification`; a named high-risk item also requires `gentle-ai-verify` through the layer's Role dispatch protocol (a herdr pane, or the internal Claude Code subagent of the same name as fallback, with the same read-only verification constraints, exact parent-authorized commands, and fallback reporting). `## Known environmental failures` follows the same definition as `gentle-ai-worker`'s Verification contract: exact pre-existing base failures reported as evidence, never blockers -- any other failing required command still forces `status: partial`. The change's own focused test and suite run inline. Separate exploration stays reserved for when the parent needs the map to decide or route; reading that prepares a write belongs with the writer making the change, consistent with the Delegation Rules table above.
+Delegate generic verification that executes or delegates commands per the Verification rule (trigger 3 under Delegation Triggers) -- the routing lives in `orchestrator-verification.md`, not here: the bounded writer always self-verifies via `## Verification`; a named high-risk item also requires `gentle-ai-verify` through the layer's Role dispatch protocol (a role pane, or the internal subagent of the same name as fallback, with the same read-only verification constraints, exact parent-authorized commands, and fallback reporting). `## Known environmental failures` follows the same definition as `gentle-ai-worker`'s Verification contract: exact pre-existing base failures reported as evidence, never blockers -- any other failing required command still forces `status: partial`. The change's own focused test and suite run inline. Separate exploration stays reserved for when the parent needs the map to decide or route; reading that prepares a write belongs with the writer making the change, consistent with the Delegation Rules table above.
 
-For delegation other than a large task's bounded writes, use the generic fallback: if no herdr pane is available for the role, fall back to the internal Claude Code subagent of the same name (Agent tool) in the current runtime, per the layer's Role dispatch protocol; never fall back to a pane, terminal, session, window, or remote worker outside that protocol. The delegation trigger remains mandatory. If no delegation mechanism is available, stop the complex work and tell the user instead of silently continuing inline.
+For delegation other than a large task's bounded writes, use the generic fallback: if no role pane is available for the role, fall back to the internal subagent of the same name (subagent tool) in the current runtime, per the layer's Role dispatch protocol; never fall back to a pane, terminal, session, window, or remote worker outside that protocol. The delegation trigger remains mandatory. If no delegation mechanism is available, stop the complex work and tell the user instead of silently continuing inline.
 
 #### Subagent Model Routing
 

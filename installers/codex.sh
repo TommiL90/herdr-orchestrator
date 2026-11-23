@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install hcorc, herdorc and the ten roles into codex: roles as custom agents; the orchestrators as profiles (codex -p hcorc), always in ~/.codex.
+# Install hcorc, herdorc and the ten roles into codex: roles as custom agents; the orchestrators as profiles (codex -p hcorc), always in ~/.codex; the commands as skills; the guard hook.
 #
 #   installers/codex.sh                     for your user, in ~/.codex
 #   installers/codex.sh --scope project [--project DIR]   in DIR/.codex (default: current dir)

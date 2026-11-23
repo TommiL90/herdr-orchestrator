@@ -4,6 +4,8 @@
 #   bash tests/test_skills.sh
 set -u
 cd "$(dirname "$0")/.."
+# orc.py --as records the calling CLI session as an orchestrator: keep that out of real state.
+export ORC_LEADS="$(mktemp)"
 ORC=$PWD/shared/bin/orc.py
 pass=0; fail=0
 check() { if eval "$2"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1"; fi; }
@@ -11,7 +13,8 @@ j() { python3 -c "import json,sys; d=json.load(sys.stdin); $1"; }
 mk() { mkdir -p "$1"; printf -- '---\nname: %s\ndescription: x\n---\nbody\n' "$2" > "$1/SKILL.md"; }
 
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-export HOME=$T/home; unset XDG_CONFIG_HOME CODEX_HOME
+# Every location install.py reads from the environment, so nothing outside $T is touched.
+export HOME=$T/home; unset XDG_CONFIG_HOME CODEX_HOME GROK_HOME PI_CODING_AGENT_DIR HERDR_APP_HOME
 mkdir -p "$T/proj" && cd "$T/proj" && git init -q
 
 check "no conflicts reported" "$ORC skills | grep -q 'no same-name conflicts'"
@@ -36,6 +39,16 @@ check "text output names the winner" "$ORC skills | grep -q -- '- testing: uses 
 # the home folder is not a project: a terminal that starts there sees user skills
 H=$(cd "$HOME" && $ORC skills --json)
 check "cwd = HOME: ~/.claude/skills counts as user, not project" "echo '$H' | j 'r=[x for x in d[\"skills\"] if x[\"name\"]==\"consensus\"]; assert r and all(x[\"scope\"]!=\"project\" for x in r), r'"
+# The Skills panel's toasts: a project copy that shadows the user's and the orchestrator's
+# keeps their global signature, so coming back from that project repeats no toast.
+R=${ORC%/shared/bin/orc.py}
+check "skills toasts: one global signature, under a project copy too" "node --input-type=module -e '
+  const { unseen } = await import(process.argv[1]);
+  const [p, h] = [JSON.parse(process.argv[2]), JSON.parse(process.argv[3])];
+  const seen = {}, n = (d) => unseen(seen, d.project, d.conflicts).length;
+  const got = [n(p), n(h), n(p), n(h)];
+  if (!(got[0] > 0 && got.slice(1).every((x) => x === 0))) throw new Error(JSON.stringify(got));
+' '$R/herdr-app/mods/orc-skills/seen.js' '$S' '$H'"
 ln -s "$T/nowhere" "$T/proj/.claude/skills/broken"; mkdir -p "$T/proj/.claude/skills/odd/SKILL.md"
 check "broken links and SKILL.md folders are skipped" "$ORC skills --json | j 'assert all(\"broken\" not in x[\"path\"] and \"/odd/\" not in x[\"path\"] for x in d[\"skills\"])'"
 

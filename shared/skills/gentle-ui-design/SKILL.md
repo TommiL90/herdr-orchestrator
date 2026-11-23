@@ -6,7 +6,7 @@ metadata:
   author: gentleman-programming
   version: "1.0"
 ---
-<!-- Ported from tomidev-shell@6ae777532 skills/gentle-ui-design/; adapted for Claude Code and other CLIs (hcorc/herdorc). Adaptations: shared/PROVENANCE-skills.md -->
+<!-- Ported from tomidev-shell@6ae777532 skills/gentle-ui-design/; adapted for the hcorc/herdorc orchestrators, any coding CLI (hcorc/herdorc). Adaptations: shared/PROVENANCE-skills.md -->
 
 ## Activation Contract
 

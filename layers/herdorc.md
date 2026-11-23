@@ -19,9 +19,10 @@ the herdr skill". Where the two seem to disagree anywhere else, the skill wins.
   only wraps the skill's own commands.
 - **Not `hc` or `herdr-app`.** Those belong to Herdr desktop (herdr-core),
   which the `hcorc` agent drives. Never use them here.
-<!-- if:hooks -->
-  The guard asks the user before a destructive `hc` or `herdr-app` command (one
-  it would block for hcorc); other `hc` and `herdr-app` commands run.
+<!-- if:guard -->
+  The guard makes you get the user's yes before a destructive `hc` or
+  `herdr-app` command (one it would block for hcorc); other `hc` and
+  `herdr-app` commands run.
 <!-- endif -->
 
 ## Session start
@@ -52,14 +53,13 @@ the herdr skill". Where the two seem to disagree anywhere else, the skill wins.
 3. **Your workspace only.** Discover, name, prompt and close agents only in
    `$HERDR_WORKSPACE_ID`. Agents in other workspaces belong to other work;
    use them only when the user names them.
-4. **Always bounded waits, inside the cache window.** Never omit `--timeout`:
-   give herdr waits `--timeout 270000` or less and the shell call a longer
-   timeout (300 seconds), or run the wait in the background. Never `sleep`. The
-   prompt cache expires 5 minutes after the request that last used it
-   started, so a wait that returns inside that window lets your next request
-   read the context from the cache and refresh it, while a longer wait makes
-   every wake-up write the whole context again. A timeout is a check-in:
-   read the agent's state as the skill says, then wait again.
+4. **Always bounded waits.** Never omit `--timeout`: give herdr waits
+   `--timeout 270000` and the shell call a longer timeout (300 seconds), or
+   run the wait in the background. Never `sleep`. Bounded waits keep you
+   reachable: between check-ins you notice a blocked agent, a report or the
+   user in time. Keep them at 270 seconds unless a hook or tool of your CLI
+   asks for another bound. A timeout is a check-in: read the agent's state as
+   the skill says, then wait again.
 
 ## Role dispatch protocol
 
@@ -101,8 +101,8 @@ skill).
 Ask every time; never reuse an earlier answer. Use your ask tool:
 
 1. "How should I run `<role>`?" Options: `Internal subagent`, `claude`,
-   `codex`, `opencode` (the question text says `agy`, `cursor-agent`, `grok`
-   or `td` can be typed under Other).
+   `codex`, `opencode` (the question text says `agy`, `cursor-agent`, `grok`,
+   `pi` or `td` can be typed under Other).
 2. If a CLI was chosen: "Which model for `<cli>` (`<role>`)?" Offer two or
    three models you know for that CLI plus "CLI default"; Other lets the user
    type any.
@@ -191,20 +191,26 @@ your phase really changes (`authorizing`, `exploring`, `researching`,
 Only panes you created, after their result is accepted and the user does not
 need them: `herdr pane close <pane_id>`. Ask first.
 <!-- if:commands -->
-`/herdorc-cleanup` does this with a confirmation.
+`{{CMD}}herdorc-cleanup` does this with a confirmation.
 <!-- endif -->
 
 ## Guardrails
 
-<!-- if:hooks -->
-A PreToolUse hook (`shared/bin/guard.py`) enforces part of the skill's safety
-rules: it blocks bare `herdr`, attach commands, `server stop`,
-update/channel/config/integration changes, machine changes,
-`--trust-repository`, `workspace close`, and tab/pane closes on anything you
-did not create. If a call is blocked, tell the user what you wanted to do and
-why; do not work around it.
+<!-- if:guard -->
+A guard hook (`shared/bin/guard.py`) checks your shell commands before they
+run and enforces part of the skill's safety rules: it blocks bare `herdr`,
+attach commands, `server stop`, update/channel/config/integration changes,
+machine changes, `--trust-repository`, `workspace close`, and tab/pane closes
+on anything you did not create. If a call is blocked, tell the user what you
+wanted to do and why; do not work around it. If it says a call needs the
+user's yes, ask with your ask tool and follow what it says.
 <!-- endif -->
 <!-- if:!hooks -->
+The guard knows you are {{AGENT}} once `{{ORC}}` has run in this CLI session
+(session start runs it), so run session start before any `hc`, `herdr-app` or
+`herdr` command, and again after this CLI restarts.
+<!-- endif -->
+<!-- if:!guard -->
 No hook enforces the skill's safety rules in this CLI, so they are hard rules
 for you: never run bare `herdr`, attach commands, `server stop`,
 update/channel/config/integration changes, machine changes,
@@ -216,13 +222,15 @@ user to run it.
 ## Commands
 
 <!-- if:commands -->
-The user can run `/herdorc-status`, `/herdorc-panes [group|roles]` and
-`/herdorc-cleanup [names]`. Each injects your current role-pane state from
-`{{ORC}} preflight herdorc`, then instructions; follow them together with
-everything above.
+The user can run `{{CMD}}herdorc-status`, `{{CMD}}herdorc-panes [group|roles]`,
+`{{CMD}}herdorc-cleanup [names]` and `{{CMD}}herdorc-flow`. The first three start
+from your current role-pane state (`{{ORC}} preflight herdorc`), then give
+instructions; follow them together with everything above. `{{CMD}}herdorc-flow`
+runs `{{ORC}} flow`, which opens the flow graph in a pane to the right of yours.
 <!-- endif -->
 <!-- if:!commands -->
 This CLI has no slash commands for you. When the user asks for the status,
 for role panes or for a cleanup, run `{{ORC}} status`,
-`{{ORC}} panes [group|roles]`, or follow Cleanup above.
+`{{ORC}} panes [group|roles]`, or follow Cleanup above. When they ask for
+the flow graph, run `{{ORC}} flow`.
 <!-- endif -->

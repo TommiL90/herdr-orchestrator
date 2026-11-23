@@ -10,7 +10,7 @@ Every `SKILL.md` gets one comment line after its frontmatter naming the source. 
 |---|---|
 | `requesting-code-review` | none (verbatim) |
 | `consensus` | none (verbatim) |
-| `tlc-spec-lean` | 4 |
+| `tlc-spec-lean` | 6 |
 | `testing` | none (verbatim) |
 | `delivery` | 3 |
 | `clean-code` | none (verbatim) |
@@ -87,6 +87,40 @@ New:
 ```text
 In a multi-repo workspace each repo has its own branch and toolchain, and the workspace root has no
 Git repository or root runner.
+```
+
+### L5 · `tlc-spec-lean/references/checks.md`
+
+Reason: The upstream cites rule 9 (handoff persistence) for captured screens; the rule on binding visual sources is rule 6.
+
+Original:
+
+```text
+feature does not change, reached through the nav: the author's `**Walked:**` line names the visit.
+[SKILL.md](../SKILL.md) rule 9.
+```
+
+New:
+
+```text
+feature does not change, reached through the nav: the author's `**Walked:**` line names the visit.
+[SKILL.md](../SKILL.md) rule 6.
+```
+
+### L6 · `tlc-spec-lean/references/checks.md`
+
+Reason: The upstream cites rule 6 (visual sources) for the mutation count; the mutation rule is rule 5.
+
+Original:
+
+```text
+not change: [SKILL.md](../SKILL.md) rule 6.
+```
+
+New:
+
+```text
+not change: [SKILL.md](../SKILL.md) rule 5.
 ```
 
 ### D1 · `delivery/SKILL.md`

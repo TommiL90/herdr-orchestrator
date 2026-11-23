@@ -38,9 +38,27 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
 
 - Keep prompts CLI-agnostic: say "ask tool", "subagent tool", "shell tool".
   `install.py` (`VOCAB`, `CLIS`) maps them per CLI. Put anything that only
-  works where a CLI has hooks or slash commands in `<!-- if:hooks -->` or
-  `<!-- if:commands -->` blocks. Only the mods in `mods/` may be specific to
-  Claude Code.
+  works where a CLI has the phase hook, the guard or commands in
+  `<!-- if:hooks -->`, `<!-- if:guard -->` or `<!-- if:commands -->` blocks.
+  Only the mods in `mods/` may be specific to Claude Code.
+- Parity: every CLI gets the commands and the guard. `install.py` writes the
+  commands as user-only skills where a CLI has no command files
+  (`SKILL_COMMAND_CLIS`, identical text for each, so a shared skills folder
+  holds one copy) and registers `guard.py --format <cli>` in each CLI's hook
+  format (`merged_hooks`, OpenCode's plugin `opencode_plugin()`, Grok's hooks
+  file `grok_hooks()`, pi's extension `pi_guard()`; pi's commands are prompt
+  templates). A new CLI gets both, or the README says why not. Never narrow an
+  orchestrator's tools: only agy needs a `tools` list (`AGY_TOOLS`, agy's own
+  names), since an agy agent without one gets read-only tools. `guard.py` reads each format's input
+  in `command_of` and answers in `answer`; where a hook can only refuse
+  (codex, opencode) an ask-class call is refused with the `ORC_CONFIRMED=1`
+  rerun instruction. pi's extension shows an ask-class call in pi's dialog.
+- Outside Claude Code the guard knows the orchestrator from
+  `orc_state.record_lead` (`orc.py --as`) and `lead_of_session`. Where a CLI
+  keeps one process across conversations (pi: `/new`, `/resume`), the record
+  is per conversation: `record_lead` reads it from `SESSION_VARS`
+  (`PI_SESSION_ID`) and the hook sends it as `session_id`. Tests that run
+  `orc.py --as` set `ORC_LEADS` to a temp file.
 - `orc.py` identifies the orchestrator from `--as <agent>` or
   `$CLAUDE_CODE_AGENT`. The mods read its files, so keep these stable:
   the phase file name and its `phase` key (`orc-cache`), the herdorc state
@@ -67,9 +85,27 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
   `install.py`'s `plugin update` picks it up.
 - `herdr-app/mods/orc-skills` reads `orc.py skills --json`; keep its `conflicts`
   and `skills` keys stable. Run `herdr-app check herdr-app/mods/orc-skills`
-  after changing it. Its layout node IDs (`orc-skills-bar`, `-toggle`,
-  `-panel`) are shared with `install.py`; never edit Herdr's shipped layouts
-  or mods (clone them).
+  after changing it; `seen.js` (which conflicts a toast reported) is pure, and
+  `tests/test_skills.sh` imports it. A new module of the mod goes in
+  `herdr_mod_files`. Its layout node IDs (`orc-skills-bar`, `-toggle`,
+  `-panel`, and the `tabs-row` column around the bar, which a tab bar that
+  grows taller resizes) are shared with `install.py`; never edit Herdr's
+  shipped layouts or mods (clone them). The manifest's `tabs_row` says whether
+  the install made that column (uninstall removes only its own). Herdr's file
+  watcher doesn't look through a mod folder's link, so `herdr_place` and
+  `extras.py` make the link again whenever a build changes: that is what
+  reloads the mod.
+- `herdr-app/mods/orc-panes` becomes the layout's pane header and draws
+  through a copy of the header it replaced: `panes_files` copies that mod's
+  modules under `base/` at install, and `props.replaces` keeps it for
+  `panes_release`. `panes_take` takes only the headers drawn by that same mod,
+  so a layout that mixes headers keeps the others. Its labels `orc.pane-name`
+  and `orc.phase` (`names.js`) are shared with `orc.py` (`PHASE_LABEL`,
+  `HcBackend.set_label`): change both
+  together. `extras.py` gives the header back around a mod's own installer or
+  uninstaller (`panes_hand_back`, `panes_take_back`). The repo folder has no
+  `base/`, so run `herdr-app check` on a build (the installed
+  `mods/orc-panes`, or one made with `panes_files`).
 - Tests and experiments never touch the user's terminals or sessions: use
   `HC_SESSION=<name>` for herdr-core and a named `herdr --session` for herdr.
 - `herdr/plugins/orc-flow/` is a herdr plugin (Node, any CLI), ported from
@@ -80,7 +116,10 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
   the same change in the plugin. It also reads `orc.py ensure ... --handoff`,
   the herdr commands herdorc's layer uses to prompt and read role panes, and
   report files named `<pane-name>-<task>.md`; keep them in step with
-  `layers/herdorc.md`.
+  `layers/herdorc.md`. `orc.py flow` opens the plugin's `graph` pane the
+  way its `bin/open.sh` does (entrypoint, `ORC_FLOW_PLACEMENT`,
+  `ORC_FLOW_ORIGIN`), beside the orchestrator's pane; for hcorc it splits the
+  agent-flow Herdr app mod. A change to either side needs the other.
 - `herdr-app/extras.json` pins each third-party Herdr app mod to a commit
   whose code was read. Bump a `ref` only after reading the new code, and
   check that `herdr-app/patches/agent-flow` still applies to a new agent-flow.

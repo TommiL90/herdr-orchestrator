@@ -17,11 +17,14 @@ export function find(node, id) {
   return null;
 }
 
-// Where the focused terminal is, as the Changes panel finds it.
+// Where the focused terminal is, as the Changes panel finds it. A terminal block names
+// its machine (`mac2/t7`, or a bare id here); a pane, a mod or nothing focused goes by
+// the space's machine.
 export function location() {
   const space = spaces().find((s) => s.active), f = focused();
   const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-  const on = f?.pane === null ? (f.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : (space?.machine ?? null);
+  const block = f?.pane === null && f?.terminal ? f.terminal : null;
+  const on = block ? (block.includes("/") ? block.split("/")[0] : null) : (space?.machine ?? null);
   return { cwd: pane?.cwd || f?.cwd || space?.folder || null, on };
 }
 export const contextKey = () => JSON.stringify(location());
@@ -45,9 +48,8 @@ export async function load() {
       result = { context, error: String(e?.message ?? e), data: last?.context === context ? last.data : undefined };
     }
   }
-  // A slower read for a place already left must not replace a newer answer.
-  const now = current();
-  if (context !== contextKey() && now?.context === contextKey()) return result;
-  if (JSON.stringify(now) !== JSON.stringify(result)) setShared(KEY, result);
+  // A read for a place already left is dropped: the next tick reads the new place.
+  if (context !== contextKey()) return result;
+  if (JSON.stringify(current()) !== JSON.stringify(result)) setShared(KEY, result);
   return result;
 }

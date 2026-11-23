@@ -1,4 +1,4 @@
-<!-- Ported from tomidev-shell@6ae777532 assets/orchestrator-verification.md; adapted for Claude Code (hcorc/herdorc). Adaptations: shared/PROVENANCE-docs.md -->
+<!-- Ported from tomidev-shell@6ae777532 assets/orchestrator-verification.md; adapted for the hcorc/herdorc orchestrators, any coding CLI. Adaptations: shared/PROVENANCE-docs.md -->
 
 # Orchestrator — Verification (lazy-loaded)
 

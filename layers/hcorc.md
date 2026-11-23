@@ -12,9 +12,9 @@ layer's background runner", it means the sections below.
 - `{{ORC}}` is this orchestrator's helper (role lookup, role panes, phase).
 - **Not `herdr`.** That binary and the `herdr` skill belong to the herdr
   terminal multiplexer, which the `herdorc` agent drives. Never use them here.
-<!-- if:hooks -->
-  The guard asks the user before a destructive `herdr` command (one it would
-  block for herdorc); other `herdr` commands run.
+<!-- if:guard -->
+  The guard makes you get the user's yes before a destructive `herdr` command
+  (one it would block for herdorc); other `herdr` commands run.
 <!-- endif -->
 - Version-matched manuals: `hc --skill`, `herdr-app --skill`,
   `hc <command> --help`, `herdr-app commands`. Check them instead of guessing.
@@ -47,11 +47,10 @@ layer's background runner", it means the sections below.
   user's own authentication.
 - Never `sleep` or poll: wait with `hc wait ... --timeout 270`, and give the
   shell call a longer timeout (300 seconds) or run it in the background.
-  `reason: timeout` is a check-in; wait again. Keep waits at 270 seconds or
-  less: the prompt cache expires 5 minutes after the request that last used
-  it started, so a check-in inside that window reads your context from the
-  cache and refreshes it, while a longer wait makes every wake-up write the
-  whole context again.
+  `reason: timeout` is a check-in, not a failure: look at the state, then
+  wait again. Bounded waits keep you reachable: between check-ins you notice
+  a blocked role, a report or the user in time. Keep them at 270 seconds
+  unless a hook or tool of your CLI asks for another bound.
 - Slow commands (builds, test suites, installs) are the layer's background
   runner: `hc run --bg --rm --no-notify --name <n> -- <cmd>`, then
   `hc wait <n> --timeout 270`, so you stay reachable.
@@ -66,7 +65,7 @@ your CLI.
 
 A role pane is a terminal named after the role (`<role>`, or `<role>-2`,
 `<role>-3` for extra ones) where some coding agent runs: claude, codex,
-opencode, agy, cursor-agent, grok, td, or anything the user started.
+opencode, agy, cursor-agent, grok, pi, td, or anything the user started.
 
 ### 1. Look up the role
 
@@ -90,8 +89,8 @@ opencode, agy, cursor-agent, grok, td, or anything the user started.
 Ask every time; never reuse an earlier answer. Use your ask tool:
 
 1. "How should I run `<role>`?" Options: `Internal subagent`, `claude`,
-   `codex`, `opencode` (the question text says `agy`, `cursor-agent`, `grok`
-   or `td` can be typed under Other).
+   `codex`, `opencode` (the question text says `agy`, `cursor-agent`, `grok`,
+   `pi` or `td` can be typed under Other).
 2. If a CLI was chosen: "Which model for `<cli>` (`<role>`)?" Offer two or
    three models you know for that CLI plus "CLI default"; Other lets the user
    type any.
@@ -157,9 +156,11 @@ user which path ran (pane `<name>` with `<cli>`, or internal subagent).
 
 ## ODD phase indicator
 
-The phase shows as the name of your pane (`hcorc · exploring`) when herdr-app
-can rename panes. herdr-app 0.1.16 cannot, so `{{ORC}} status` prints
-`phase indicator: inactive`; while it does, make no phase reports.
+The phase shows as the name of your pane (`hcorc · exploring`): through
+herdr-app's own pane rename when it has one, else in your pane's header when
+the `orc-panes` mod is installed (`installers/herdr-app.sh`). Without either,
+`{{ORC}} status` prints `phase indicator: inactive`; while it does, make no
+phase reports.
 <!-- if:hooks -->
 When it prints `active`, a hook infers the phase from your tool activity;
 refine the label only when your phase really changes with
@@ -180,19 +181,26 @@ Only your own children, after their result is accepted and the user does not
 need them: `hc kill <name>; hc rm <name>` (its pane closes). Ask before
 removing anything the user may still want to inspect.
 <!-- if:commands -->
-`/hcorc-cleanup` does this with a confirmation.
+`{{CMD}}hcorc-cleanup` does this with a confirmation.
 <!-- endif -->
 
 ## Guardrails
 
-<!-- if:hooks -->
-A PreToolUse hook (`shared/bin/guard.py`) blocks `hc server stop|restart`,
-`hc update`, `hc machine rm`, `hc send --force`, `hc kill|rm` on terminals
-that are not your children, interactive or target-less `hc` calls, and
-`herdr-app do` commands that close or reset the layout. If a call is blocked,
-tell the user what you wanted to do and why; do not work around it.
+<!-- if:guard -->
+A guard hook (`shared/bin/guard.py`) checks your shell commands before they
+run. It blocks `hc server stop|restart`, `hc update`, `hc machine rm`,
+`hc send --force`, `hc kill|rm` on terminals that are not your children,
+interactive or target-less `hc` calls, and `herdr-app do` commands that close
+or reset the layout. If a call is blocked, tell the user what you wanted to do
+and why; do not work around it. If it says a call needs the user's yes, ask
+with your ask tool and follow what it says.
 <!-- endif -->
 <!-- if:!hooks -->
+The guard knows you are {{AGENT}} once `{{ORC}}` has run in this CLI session
+(session start runs it), so run session start before any `hc`, `herdr-app` or
+`herdr` command, and again after this CLI restarts.
+<!-- endif -->
+<!-- if:!guard -->
 No hook enforces these in this CLI, so they are hard rules for you: never run
 `hc server stop|restart`, `hc update`, `hc machine rm`, `hc send --force`,
 `hc kill|rm` on a terminal that is not your child (check its parent with
@@ -204,13 +212,15 @@ ask the user to run it.
 ## Commands
 
 <!-- if:commands -->
-The user can run `/hcorc-status`, `/hcorc-panes [group|roles]` and
-`/hcorc-cleanup [names]`. Each injects your current role-pane state from
-`{{ORC}} preflight hcorc`, then instructions; follow them together with
-everything above.
+The user can run `{{CMD}}hcorc-status`, `{{CMD}}hcorc-panes [group|roles]`,
+`{{CMD}}hcorc-cleanup [names]` and `{{CMD}}hcorc-flow`. The first three start
+from your current role-pane state (`{{ORC}} preflight hcorc`), then give
+instructions; follow them together with everything above. `{{CMD}}hcorc-flow`
+runs `{{ORC}} flow`, which opens the flow graph in a pane to the right of yours.
 <!-- endif -->
 <!-- if:!commands -->
 This CLI has no slash commands for you. When the user asks for the status,
 for role panes or for a cleanup, run `{{ORC}} status`,
-`{{ORC}} panes [group|roles]`, or follow Cleanup above.
+`{{ORC}} panes [group|roles]`, or follow Cleanup above. When they ask for
+the flow graph, run `{{ORC}} flow`.
 <!-- endif -->

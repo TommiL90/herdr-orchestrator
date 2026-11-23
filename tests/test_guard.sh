@@ -183,6 +183,97 @@ CLAUDE_CODE_AGENT=hcorc t 2 gentle-ai-worker 'hc server stop'
 CLAUDE_CODE_AGENT=herdorc t 2 gentle-ai-verify 'herdr server stop'
 CLAUDE_CODE_AGENT=hcorc t 0 gentle-ai-worker 'hc ls'
 
+# Every CLI's hook format. Outside Claude Code no variable names the agent:
+# `orc.py --as <agent>` records the CLI session it runs in, and the guard that
+# same CLI starts looks it up. A perl process stands in for the CLI, in a
+# throwaway HOME (leads.json lives there).
+FAKE=$(mktemp -d)
+cat > "$FAKE/cli.pl" <<'PL'
+# fake-cli.pl <record: 0|1> <format>[:<input shape>] <command>: prints the guard's rc, then its output.
+my ($record, $spec, $cmd) = @ARGV;
+my ($fmt, $shape) = split /:/, $spec; $shape //= $fmt;
+system("python3", "shared/bin/orc.py", "--as", "herdorc", "skills", "--json") if $record;
+my $j = sub { my $s = shift; $s =~ s/(["\\])/\\$1/g; $s =~ s/\n/\\n/g; "\"$s\"" };
+my $in = $shape eq "agy" ? '{"toolCall":{"name":"run_command","args":{"CommandLine":' . $j->($cmd) . '}}}'
+       : ($shape eq "pi" && $ENV{PI_IN}) ? '{"command":' . $j->($cmd) . ',"session_id":' . $j->($ENV{PI_IN}) . '}'
+       : ($shape eq "cursor" || $shape eq "opencode" || $shape eq "pi") ? '{"command":' . $j->($cmd) . '}'
+       : $shape eq "grokcut" ? '{"hook_event_name":"PreToolUse","toolName":"run_terminal_command","toolInput":' . $j->('{"command":"' . $cmd . ' [truncated]') . ',"toolInputTruncated":true}'
+       : $shape eq "grok" ? '{"hook_event_name":"PreToolUse","toolName":"run_terminal_command","toolInput":{"command":' . $j->($cmd) . '},"tool_name":"run_terminal_command","tool_input":{"command":' . $j->($cmd) . '}}'
+       : '{"tool_input":{"command":' . $j->($cmd) . '}}';
+open(my $p, "|-", "shared/bin/guard.py --format $fmt >$ENV{FAKE}/out 2>&1") or die;
+print $p $in; close($p);
+print $? >> 8, "\n";
+PL
+# f <expect> <format> <command> [record]: expect 0 (allowed, no decision), deny, ask
+# (agy/cursor JSON) or 2 (codex/opencode refuse; for an ask the text says how to confirm).
+f() {
+  local exp=$1 fmt=$2 cmd=$3 rec=${4:-1} rc out got
+  rc=$(HOME=$FAKE/home FAKE=$FAKE perl "$FAKE/cli.pl" "$rec" "$fmt" "$cmd" 2>/dev/null | tail -1); out=$(cat "$FAKE/out")
+  got=$rc
+  case "$out" in
+    *'"decision": "deny"'*|*'"permission": "deny"'*) got=deny ;;
+    *'"force_ask"'*|*'"permission": "ask"'*|*'"decision": "ask"'*) got=ask ;;
+  esac
+  [ "$rc" = 2 ] && case "$out" in *ORC_CONFIRMED=1*) got=2ask ;; esac
+  [ "$got" = 0 ] && [ -n "$out" ] && got="0+output"
+  if [ "$got" = "$exp" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL exp=$exp got=$got [$fmt] $cmd :: $out"; fi
+}
+mkdir -p "$FAKE/home"
+f deny     agy      'herdr server stop'
+f ask      agy      'hc server stop'
+f 0        agy      'herdr pane list'
+f deny     cursor   'herdr server stop'
+f ask      cursor   'hc server stop'
+f 0        cursor   'ls'
+f 2        codex    'herdr server stop'
+f 2ask     codex    'hc server stop'
+f 0        codex    'ORC_CONFIRMED=1 hc server stop'
+f 2        codex    'ORC_CONFIRMED=1 herdr server stop'
+f 2        opencode 'herdr server stop'
+f 2ask     opencode 'hc server stop'
+f 0        opencode 'ORC_CONFIRMED=1 hc server stop'
+f deny     grok     'herdr server stop'
+f ask      grok     'hc server stop'
+f 0        grok     'herdr pane list'
+f deny     pi       'herdr server stop'
+f ask      pi       'hc server stop'
+f 0        pi       'ls'
+# confirming is for codex/opencode only: a CLI that can ask still asks
+f ask      cursor   'ORC_CONFIRMED=1 hc server stop'
+f ask      grok     'ORC_CONFIRMED=1 hc server stop'
+f ask      pi       'ORC_CONFIRMED=1 hc server stop'
+# Grok also runs Claude Code's and Cursor's hook files: their guards stay out of its calls
+f 0        claude:grok 'herdr server stop'
+f 0        cursor:grok 'herdr server stop'
+# Grok cuts an input past 128 KiB to a string: unreadable, so an orchestrator's call is refused
+f deny     grok:grokcut 'cat > big.txt <<EOF'
+f 0        grok:grokcut 'cat > big.txt <<EOF' 0
+# a CLI session that never ran orc.py --as is not the orchestrator
+f 0        cursor   'herdr server stop' 0
+f 0        codex    'herdr server stop' 0
+f 0        grok     'herdr server stop' 0
+f 0        pi       'herdr server stop' 0
+# pi keeps its process across /new and /resume: orc.py --as records the conversation
+# (PI_SESSION_ID), the extension sends the one a call comes from (PI_IN here)
+export PI_SESSION_ID=s1 PI_IN=s1; f deny pi 'herdr server stop'
+export PI_IN=s2; f 0 pi 'herdr server stop'
+unset PI_SESSION_ID PI_IN
+HOME=$FAKE/home ORC_LEADS=$FAKE/leads.json python3 -c "
+import os, sys; sys.path.insert(0, 'shared/bin'); import orc_state as s
+os.environ['PI_SESSION_ID'] = 's1'; s.record_lead('herdorc')
+os.environ['PI_SESSION_ID'] = 's2'; s.record_lead('hcorc')
+assert [s.lead_of_session(c) for c in ('s1', 's2', 's3', '')] == ['herdorc', 'hcorc', '', 'hcorc']
+del os.environ['PI_SESSION_ID']; s.record_lead('herdorc')  # a CLI that names no conversation
+assert s.lead_of_session('s3') == 'herdorc'
+" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL leads per conversation"; }
+# another tool's call (agy) is not a shell command
+printf '%s' '{"toolCall":{"name":"view_file","args":{"CommandLine":"herdr server stop"}}}' | HOME=$FAKE/home shared/bin/guard.py --format agy >"$FAKE/out" 2>&1
+if [ $? = 0 ] && [ ! -s "$FAKE/out" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL agy view_file"; fi
+# the OpenCode plugin passes the session's agent: an orchestrator agent needs no record
+printf '%s' '{"command":"herdr server stop","agent_type":"herdorc"}' | HOME=$FAKE/home shared/bin/guard.py --format opencode >/dev/null 2>&1
+if [ $? = 2 ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL opencode agent_type"; fi
+rm -rf "$FAKE"
+
 echo "guard: pass=$pass fail=$fail"
 hc kill kid >/dev/null 2>&1; hc kill other >/dev/null 2>&1; hc kill boss >/dev/null 2>&1
 hc server stop >/dev/null 2>&1

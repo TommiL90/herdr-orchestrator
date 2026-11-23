@@ -2,7 +2,7 @@
 # Install everything this machine can take, after cloning the repo:
 #
 #   ./install.sh                 the coding CLIs on PATH (claude, opencode, agy, codex,
-#                                cursor-agent), the Herdr app Skills panel if Herdr is
+#                                cursor-agent, grok, pi), the Herdr app Skills panel if Herdr is
 #                                installed, and orc-flow if herdr is on PATH
 #   ./install.sh --extras        also the third-party Herdr app mods (pinned):
 #                                herdr-nvim, gitview, file-icons, filetree,
@@ -44,14 +44,14 @@ herdr_app_home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
 has_herdr_app() { command -v herdr-app >/dev/null 2>&1 || [ -d "$herdr_app_home/layouts" ]; }
 clis() {
   case $cli_args in *--cli*) return 0 ;; esac
-  for b in claude opencode agy codex cursor-agent; do command -v "$b" >/dev/null 2>&1 && return 0; done
+  for b in claude opencode agy codex cursor-agent grok pi; do command -v "$b" >/dev/null 2>&1 && return 0; done
   return 1
 }
 run_clis() {
   if [ -n "$uninstall" ] || clis; then  # uninstall: install.py finds what is recorded, CLI on PATH or not
     step "coding CLIs" eval "python3 \"\$ROOT/install.py\" $uninstall $common $cli_args"
   else
-    printf '\n== coding CLIs: none on PATH (claude, opencode, agy, codex, cursor-agent); skipped\n'
+    printf '\n== coding CLIs: none on PATH (claude, opencode, agy, codex, cursor-agent, grok, pi); skipped\n'
   fi
 }
 
