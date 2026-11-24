@@ -158,7 +158,8 @@ which skills the orchestrator will use in the focused terminal's project:
 its own skills, the project's and yours. It also lists each same-name
 conflict, with the copy that wins (project, then user, then the
 orchestrator's) and the copies it shadows. The button shows how many
-conflicts there are, and a toast appears when they change. The panel only
+conflicts there are, and a toast appears when they change. The command
+palette (Herdr 0.1.18+) opens it too: "Skills: same-name conflicts". The panel only
 reads; it works with every CLI, because it runs `orc.py skills --json`.
 
 Herdr's own layouts are read-only. If the shown layout is one of them, the

@@ -212,6 +212,7 @@ echo '{"layout:main": {"json": "x"}}' > "$H/installed.json"; echo '{"layout": "m
 L=$H/layouts/main-orc.json
 check "herdr-app: shipped layout cloned, not edited" "HP >/dev/null && [ -f '$L' ] && grep -q '\"tabs\"' '$H/layouts/main.json' && ! grep -q orc-skills '$H/layouts/main.json'"
 check "herdr-app: button and hidden panel added" "python3 -c \"import json;s=open('$L').read();d=json.loads(s);assert s.count('orc-skills-toggle')==1 and s.count('orc-skills-panel')==1;assert '\\\"hidden\\\": true' in s\""
+check "herdr-app: the palette entry toggles the panel the layout has" "python3 -c \"import json,sys;sys.path.insert(0,'$REPO');import install as I;e=json.load(open('$H/mods/orc-skills/mod.json'))['palette'][0];assert e['command']=='layout.toggle' and I.herdr_find(json.load(open('$L')),e['args']['id']),e\""
 check "herdr-app: config points at this clone" "grep -q '$REPO/shared/bin/orc.py' '$H/mods/orc-skills/config.js' && [ -f '$H/mods/orc-skills/main.js' ]"
 check "herdr-app: the mod folder is a link to its build in dist" "[ \"\$(readlink '$H/mods/orc-skills')\" = '$ORC_DIST/abs${H}/mods/orc-skills' ] && cmp -s '$H/mods/orc-skills/main.js' '$REPO/herdr-app/mods/orc-skills/main.js'"
 check "herdr-app: the repo's placeholder config is untouched" "grep -q 'export const ORC = \"\"' '$REPO/herdr-app/mods/orc-skills/config.js'"

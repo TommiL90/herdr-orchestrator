@@ -88,7 +88,7 @@ coding CLIs. `README.md` describes the product; this file is for changing it.
   after changing it; `seen.js` (which conflicts a toast reported) is pure, and
   `tests/test_skills.sh` imports it. A new module of the mod goes in
   `herdr_mod_files`. Its layout node IDs (`orc-skills-bar`, `-toggle`,
-  `-panel`, and the `tabs-row` column around the bar, which a tab bar that
+  `-panel`, which its `mod.json` palette entry toggles, and the `tabs-row` column around the bar, which a tab bar that
   grows taller resizes) are shared with `install.py`; never edit Herdr's
   shipped layouts or mods (clone them). The manifest's `tabs_row` says whether
   the install made that column (uninstall removes only its own). Herdr's file
