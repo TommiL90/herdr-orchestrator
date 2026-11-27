@@ -190,8 +190,10 @@ VOCAB = {
 AGY_TOOLS = {"Read": ["read_file"], "Grep": ["read_file"], "Glob": ["read_file"],
              "Edit": ["edit_file"], "Write": ["write_file"], "Bash": ["run_command", "manage_task"],
              "WebSearch": ["search_web"], "WebFetch": ["search_web"]}
-# The orchestrators also ask the user and start role subagents.
-AGY_ORCHESTRATOR_TOOLS = sorted({t for ts in AGY_TOOLS.values() for t in ts} | {"ask_question", "invoke_subagent"})
+# The orchestrators also ask the user, start role subagents and run workflow scripts that
+# fan work out to many subagents (`run_workflow`, agy 1.5+; `/run-workflow` calls it).
+AGY_ORCHESTRATOR_TOOLS = sorted({t for ts in AGY_TOOLS.values() for t in ts}
+                                | {"ask_question", "invoke_subagent", "run_workflow"})
 
 SUBAGENT_NOTE = ("\n\n## When you run as an internal subagent\n\n"
                  "The orchestrator started you as an internal subagent instead of in a pane. Your return "

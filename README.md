@@ -144,8 +144,9 @@ Global locations: `~/.claude`, `~/.config/opencode`, `~/.gemini/config`,
 
 No orchestrator file narrows its tools. agy is the one CLI that needs a list
 (an agent without one gets only read-only tools), so its agents list agy's own
-tool names; in the others an agent without a list keeps every tool, the shell
-included.
+tool names (the orchestrators' include `ask_question`, `invoke_subagent` and
+`run_workflow`); in the others an agent without a list keeps every tool, the
+shell included.
 
 Start an orchestrator from inside a Herdr pane (`hcorc`) or a herdr pane
 (`herdorc`). Outside one, it still works but uses internal subagents only.

@@ -90,7 +90,7 @@ check "agy roles: subagent only, exact tools" "grep -q '^mainAgent: false' $HOME
 check "agy orchestrators list their tools (an omitted list is read-only): shell, ask, subagents" "python3 -c \"
 import re; t=open('$HOME/.gemini/config/agents/hcorc/agent.md').read(); fm=t.split('---')[1]
 tools=re.findall(r'^  - (\\S+)', fm, re.M)
-assert {'run_command','manage_task','ask_question','invoke_subagent','read_file','edit_file','write_file'} <= set(tools), tools\""
+assert {'run_command','manage_task','ask_question','invoke_subagent','run_workflow','read_file','edit_file','write_file'} <= set(tools), tools\""
 check "agy agents use only agy's current tool names" "! grep -h -E '^  - (view_file|list_dir|grep_search|find_by_name|replace_file_content|write_to_file|read_url_content|command_status)\$' $HOME/.gemini/config/agents/*/agent.md && ! grep -q command_status $HOME/.gemini/config/agents/hcorc/agent.md"
 check "herdorc embeds the herdr skill" "grep -q 'The \`herdr\` skill follows' $HOME/.gemini/config/agents/herdorc/agent.md"
 # tomllib is Python 3.11+; the scripts support 3.9, so older Pythons get a smaller check.
